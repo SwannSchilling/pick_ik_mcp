@@ -20,7 +20,10 @@ produced, and it has done so in three consecutive runs. The last:
 ```
 
 Fifteen tests entered, fifteen completed, the watchdog never fired. The gate this file set — *"Do NOT
-call the server 'done' until it does"* — is met.
+call the server 'done' until it does"* — is met, and met twice over: that tally was `18:12:35`, taken
+before the last mend to the suite, and the run was repeated at `20:23:37` (`pid26304`) against the tree
+as committed, giving the same `42 passed, 0 failed`, the same fifteen-and-fifteen, `0` signals, the
+watchdog's file at its one header line, and nine halts reporting `still alive=False`.
 
 There was never a fault in the wire, the fixture's framing, the OS, or the SDK. There were two defects
 in `pick_ik_mcp/mcp_client.py`, and the interruption that was taken for the hang came from one of them.
@@ -232,10 +235,16 @@ All of these were faults of the checks and not of the server, which is the point
 - `threading.excepthook` is a real trap: it is called with ONE `ExceptHookArgs` record (3.8+). A
   four-parameter hook raises inside the hook, and a raising hook is reported by the same mechanism,
   which recurses. Keep the hook single-argument, non-raising, and bounded in what it prints.
-- Running the suite via the DeepSeek-harness `bash` tool crashed the harness repeatedly (threads +
-  sockets + large output). The user therefore runs `test_server.py` themselves in a PowerShell terminal.
-  **Do not try to execute that suite through the harness shell.** Standalone probes — one thread, one
-  listener, bounded — are safe and were used throughout, which is how the mechanism was measured at all.
+- Running the suite via the DeepSeek-harness `bash` tool **crashed the harness repeatedly**, and the
+  whole of this session's evidence was produced by the user running `test_server.py` in a PowerShell
+  terminal instead. That instruction stands. It is, however, now partly measured and no longer entirely
+  folklore: at the end the suite was put through that shell once, with **every byte of its output
+  redirected into `suite.log` so the shell captured nothing**, under `timeout --kill-after=40 320`, and
+  it completed at exit `0` in 2 s — 42/42, harness intact. The hazard is therefore the *captured output*
+  and not the threads and not the sockets: redirect it all, bound it, and understand the thing actually
+  forbidden to be a bare `python test_server.py` whose report the shell swallows whole. Re-test that
+  sentence before leaning on it — it is one clean run against a history of crashes, and a suite that can
+  take the tool down with it is a bad trade for any result it could give.
 - The suite's opt-in is inverted to run by default: `RUN_UNATTENDED = True` and
   `WATCHDOG_S = float(os.getenv("PICKIK_TEST_WATCHDOG_S", "8"))` in `test_server.py`. Set
   `RUN_UNATTENDED = False` to re-arm the gate; the skip notice is now reachable and will be printed,
