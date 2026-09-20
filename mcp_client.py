@@ -36,8 +36,9 @@ for _cand in (os.path.join(_HERE, "vendored"), os.environ.get("PICKIK_ADDON_TREE
 
 import mcp_protocol as P  # noqa: E402  (vendored copy, or the add-on tree when that is pinned)
 
-#: Where the bridge publishes its live endpoint. `~`, never a hard-coded port: 9876 is a *default*
-#: in the add-on's preferences, and reading the file is the only way to follow a user who moved it.
+#: Where the bridge publishes its live endpoint. `~`, never a hard-coded port: 9876 is only the
+#: default behind the add-on's 'Port' property, edited in the PickIK sidebar box and not on the
+#: preferences page, and reading this file is the only way to follow someone who moved it.
 RUNTIME_FILE = os.path.expanduser(os.path.join("~", ".pickik", "bridge.json"))
 CLIENT_NAME = "pickik-mcp-server"
 GRACE_MS = 250              # transport patience on top of the bridge's own deadline

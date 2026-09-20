@@ -116,6 +116,6 @@ watchdog of eight seconds that names the test which stopped and where every thre
 - A socket is closed by shutting the write side, then the read side, then releasing the descriptor.
   `close()` straight after `sendall` can reset instead of flush, and closing with unread bytes in the
   queue makes WinSock send a reset and discard the reply already on its way.
-- The endpoint is read from `~/.pickik/bridge.json`, never from a hard-coded port. The default 9876 is a
-  preference a user may move at any time, and a stale record from a dead Blender looks exactly like a live
-  one until you try to connect.
+- The endpoint is read from `~/.pickik/bridge.json`, never from a hard-coded port. 9876 is only the
+  default behind the add-on's **Port** property, which is edited in the PickIK sidebar box at any time,
+  and a stale record from a dead Blender looks exactly like a live one until you try to connect.
