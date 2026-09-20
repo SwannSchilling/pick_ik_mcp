@@ -196,9 +196,20 @@ All of these were faults of the checks and not of the server, which is the point
 
 - `ResourceWarnings` (`unclosed file`) from `open(path).read()` one-liners in the suite — cosmetic, and
   untouched. Close them or use `with`.
-- The tree is under **no version control**: there is no repository at, above, or beside it, so `git diff`
-  answers *not a git repository* and an audit can only be made against the files themselves and not
-  against a history. Put that right before the next change of consequence.
+- **The push is the only thing not done.** The package keeps a repository of its own now, on `main`, in
+  the manner of the family it lives in — `blender_ik_addon`, `ik-service` and `libpick-ik-core` are each
+  one too, and the project root is not a repository at all, which is the arrangement and not an
+  oversight. `origin` is wired to `SwannSchilling/pick_ik_mcp` by that same convention and the identity
+  that authorises it is confirmed working (`ssh -T` returns *successfully authenticated*), but no
+  repository exists at that address: six spellings near the convention all answer 128. Creating it is a
+  web UI or token affair. The moment it exists, `git push -u origin main` is the whole of the rest.
+- **Line endings are pinned, and that is load-bearing and not tidy-up.** `core.autocrlf` is `true` on
+  this box, and no sibling carries a `.gitattributes` — because no sibling is byte-compared against a
+  file in *another* repository. This one is: the vendored copy's digest is checked against
+  `blender_ik_addon/mcp_protocol.py`, across the boundary of two working trees. Left to `autocrlf`, a
+  checkout would have rewritten that file to `CR=336` and the check would have reported a protocol
+  drift that was never in the protocol. It is measured, not believed: a fresh clone yields
+  `CR=0 LF=336 407128dcdca6`, byte-equal to the authority.
 
 ## Discipline notes (learned the hard way, both sessions)
 
