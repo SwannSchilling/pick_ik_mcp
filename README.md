@@ -28,9 +28,15 @@ the bridge reports about itself, the tool table with each command's class, lane 
 self-checks. It needs no client and no running Blender.
 
 Point your MCP client at it with `command` set to your python and `args` to
-`["…/pick_ik_mcp/mcp_server.py"]`. Optional configuration is one file, `~/.pickik/mcp_config.json`,
-read once at start; an unrecognised key is a refusal rather than something to ignore, because a typo in
-an option name is a mistake you should hear about. See `mcp_config.example.json`.
+`["…/pick_ik_mcp/mcp_server.py"]`. Optional configuration is one file, `~/.pickik/mcp_config.json`
+(`--config` to put it elsewhere), read once at start; an unrecognised key is a refusal rather than
+something to ignore, because a typo in an option name is a mistake you should hear about. See
+`mcp_config.example.json`, and `GETTING_STARTED.md` for the two caveats that used to be missing here:
+`--check` **does not read that file at all**, so it cannot confirm that your settings took — only the
+serving path reads it — and of the six keys the server accepts, **only `runtime_file` is consumed**, the
+other five being accepted in silence and then never looked at. Because a key the server does not read is
+a refusal, the example carries no `_comment` either, and is one key deep for that reason and not from
+stinginess.
 
 ## What is exposed, and where the list comes from
 
@@ -95,7 +101,7 @@ watchdog of eight seconds that names the test which stopped and where every thre
 
 | what you see | what it means | what to do |
 |---|---|---|
-| `running: false`, `found: false` | no bridge is publishing an endpoint | in Blender: Preferences ▹ Add-ons ▹ PickIK ▹ **Start MCP bridge**. The server will not do it for you |
+| `running: false`, `found: false` | no bridge is publishing an endpoint | in Blender: press **N** for the 3D-view sidebar ▹ category **PickIK** ▹ panel **PickIK arm7** ▹ tick **Enable MCP bridge**, then press **Start**. The server will not do it for you |
 | `why:` starting `proto_rev:` | the add-on and this server speak different revisions of the protocol | upgrade one of them deliberately; the runtime record says which is which |
 | `why:` starting `acces:` | the **bridge** refused the session at the handshake: the secret in the runtime record is not the one the running bridge holds | **not** the gate refusal below, despite the same code, and the two want opposite remedies: restart the bridge in Blender so it publishes a fresh record, since one left behind by an earlier session is the usual cause |
 | `E_ACCES` | a gate was not satisfied | the agent must type `confirm` (and `arm`, for motion) itself. Read the message: it names what is missing |

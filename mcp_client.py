@@ -330,11 +330,15 @@ def describe_endpoint(path: str = RUNTIME_FILE) -> dict:
     except BridgeGone as exc:
         return {"running": False, "runtime_file": path, "found": False,
                 "why": f"the runtime record is unreadable: {exc.detail}",
-                "how_to_start": "in Blender: Edit > Preferences > Add-ons > PickIK > Start MCP bridge"}
+                "how_to_start": "in Blender: press N for the 3D-view sidebar, open the PickIK category, "
+                                   "panel 'PickIK arm7', tick 'MCP bridge' (the property that permits a start at all), "
+                                   "then press Start. The server cannot start it for you"}
     if rec is None:
         return {"running": False, "runtime_file": path, "found": False,
                 "why": "no bridge is publishing an endpoint",
-                "how_to_start": "in Blender: Edit > Preferences > Add-ons > PickIK > Start MCP bridge"}
+                "how_to_start": "in Blender: press N for the 3D-view sidebar, open the PickIK category, "
+                                   "panel 'PickIK arm7', tick 'MCP bridge' (the property that permits a start at all), "
+                                   "then press Start. The server cannot start it for you"}
     probe = Bridge(str(rec.get("host", "127.0.0.1")), int(rec.get("port", 0)),
                    str(rec.get("token", ""))).ping()
     out = {"running": bool(probe.get("ok")), "runtime_file": path, "found": True,
