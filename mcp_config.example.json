@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy to ~/.pickik/config.json (or pass --config). READ BY pick_ik_mcp/mcp_server.py, which is the CLIENT of the bridge. The bridge inside Blender takes its own knobs from the add-on preferences (Edit > Preferences > Add-ons > PickIK arm7), not from this file: what crosses the process boundary is only host, port and token, and it crosses via runtime_file. See pick_ik_mcp/README.md, 'who reads what'.",
+  "protocol": "pickik-bridge/1",
+  "host": "127.0.0.1",
+  "port": 9876,
+  "runtime_file": "~/.pickik/bridge.json",
+  "auth": { "token": "", "insecure_no_auth": false, "max_handshake_attempts": 5 },
+  "bridge": { "idle_timeout_s": 300, "tick_interval_s": 0.05,
+              "tick_budget_ms": 4, "request_timeout_ms": 5000 },
+  "export_root": "~/pickik/export",
+  "hardware": { "enabled": false, "allow_install": false, "max_speed_erpm": 0.0 }
+}

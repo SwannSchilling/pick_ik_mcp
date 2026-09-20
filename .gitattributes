@@ -1,0 +1,23 @@
+# Line endings, pinned, because this package is measured by bytes against a file that lives in
+# another repository. `vendored/mcp_protocol.py` and `blender_ik_addon/mcp_protocol.py` have to be
+# byte-identical — the suite digests one and compares it against the other, and the documents quote
+# the revision that digest makes. A checkout that rewrote one copy's endings under the other would
+# report a drift in the protocol that was never in the protocol, in the one check whose whole
+# business is to say whether the protocol has drifted. The neighbours carry no such file, because
+# none of them is measured against an other repository's working copy.
+#
+# Pinned here rather than left to `core.autocrlf`, which is `true` on this box: an attribute wins
+# over that setting, and another party's global configuration is not mine to edit.
+*                   text eol=lf
+*.py                text eol=lf
+*.md                text eol=lf
+*.txt               text eol=lf
+*.json              text eol=lf
+.gitignore          text eol=lf
+.gitattributes      text eol=lf
+
+# What is not text is left strictly alone, whatever the guess about its first bytes.
+*.dll               binary
+*.pdb               binary
+*.pyc               binary
+*.png               binary

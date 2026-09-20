@@ -1,0 +1,23 @@
+# Bytecode and the interpreter's caches — never part of the package.
+__pycache__/
+*.pyc
+
+# The suite's artefacts. It writes these beside itself and reads them back as the evidence
+# behind its tally; they are the record of one run, and not a thing under version control.
+# Excluded by KIND and not by name: the last three were named out one at a time, and a fourth
+# (suite-nowrap.log) walked straight past the list and into the first staging.
+*.log
+tests/suite.log
+tests/run-journal.log
+tests/watchdog-dump.log
+
+# Forensics a crash handler drops in the CWD (as in ik-service).
+crash_stack.txt
+
+# Built output of the package proper.
+build/
+dist/
+*.egg-info/
+
+# Windows redirect artifact (a stray '> nul' in a non-reserved context):
+nul

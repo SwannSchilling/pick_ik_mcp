@@ -1,0 +1,23 @@
+# The MCP server's only third-party dependency. Everything else here is the standard library.
+#
+# The version floor is not decorative: below 1.2 the server package does not carry the low-level
+# `Server` with which a tool list can be handed over already built. That matters more than it sounds
+# -- the high-level FastMCP derives a tool's input schema from the Python signature of the function
+# you decorate, and this server refuses that: the catalogue in mcp_protocol is the single authority
+# over what a command is, so its schemas are generated from it rather than typed a second time by
+# hand beside fourteen decorated signatures. Pinning the floor is what keeps that property from
+# quietly becoming a support for something else entirely.
+#
+# The ceiling is the honest one: an unbounded major-version allowance is how a silent upgrade
+# becomes a loud outage, and this file is read by a person, not by a machine looking for something
+# in common.
+mcp>=1.2,<2
+
+# Checked against, at the time of writing: mcp 1.26.0 on CPython 3.13.5, whose
+# `mcp.server.Server`, `mcp.types.Tool` and `mcp.server.stdio.stdio_server` are the three names
+# this server actually reaches for. Install with:
+#
+#     pip install -r pick_ik_mcp/requirements.txt
+#
+# Do NOT install this into Blender's Python. The bridge runs there, and the two are meant to be
+# strangers, not peers: nothing in the add-on imports this package and nothing here imports `bpy`.
