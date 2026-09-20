@@ -199,13 +199,16 @@ All of these were faults of the checks and not of the server, which is the point
 
 - `ResourceWarnings` (`unclosed file`) from `open(path).read()` one-liners in the suite — cosmetic, and
   untouched. Close them or use `with`.
-- **The push is the only thing not done.** The package keeps a repository of its own now, on `main`, in
-  the manner of the family it lives in — `blender_ik_addon`, `ik-service` and `libpick-ik-core` are each
-  one too, and the project root is not a repository at all, which is the arrangement and not an
-  oversight. `origin` is wired to `SwannSchilling/pick_ik_mcp` by that same convention and the identity
-  that authorises it is confirmed working (`ssh -T` returns *successfully authenticated*), but no
-  repository exists at that address: six spellings near the convention all answer 128. Creating it is a
-  web UI or token affair. The moment it exists, `git push -u origin main` is the whole of the rest.
+- **The repository is made, pushed, and verified on the far side.** The package keeps a repository of
+  its own now, on `main`, in the manner of the family it lives in — `blender_ik_addon`, `ik-service` and
+  `libpick-ik-core` are each one too, and the project root is not a repository at all, which is the
+  arrangement and not an oversight. `origin` is `SwannSchilling/pick_ik_mcp`, by that same convention,
+  and the history is on it: the server's own `ls-remote --heads` names the same head the local
+  `rev-parse` does, its default branch is `main`, and `git status --branch` reports neither ahead nor
+  behind. What was checked after the push is not the push's report of itself but a fresh clone back down
+  over ssh, whose twelve files came byte-identical to the working copy and to the authority — including
+  the vendored copy at `CR=0 LF=336 407128dcdca6` against the add-on's file in the *other* repository.
+  The only thing left in this file that is genuinely open is the cosmetic `ResourceWarnings` above.
 - **Line endings are pinned, and that is load-bearing and not tidy-up.** `core.autocrlf` is `true` on
   this box, and no sibling carries a `.gitattributes` — because no sibling is byte-compared against a
   file in *another* repository. This one is: the vendored copy's digest is checked against
