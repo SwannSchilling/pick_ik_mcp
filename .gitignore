@@ -11,6 +11,10 @@ tests/suite.log
 tests/run-journal.log
 tests/watchdog-dump.log
 
+# The marker a diagnosis plants to prove its own artefacts are fresh and not a corpse read as a
+# result: an artefact of the same family, and it dirties `git status` on every use if it is left out.
+.run-marker
+
 # Forensics a crash handler drops in the CWD (as in ik-service).
 crash_stack.txt
 
