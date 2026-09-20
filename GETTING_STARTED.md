@@ -45,14 +45,25 @@ The add-on registers as **"PickIK arm7 (native C ABI)"**. Enable it in the usual
 
 **3D View · press `N` · category `PickIK` · panel `PickIK arm7` · tick `MCP bridge` · press `Start`**
 
-Two things about that path are worth knowing before you look, because both cost a person five minutes.
-The buttons are **not** in `Edit ▸ Preferences`: `PICKIK_PG_preferences` declares the properties and
-defines **no `draw()`**, so the preferences page renders none of them; the box that does draw them is
-`PICKIK_PT_main` (`__init__.py:1413`, `bl_space_type='VIEW_3D'`, `bl_region_type='UI'`,
-`bl_category="PickIK"`). And the tick is labelled **`MCP bridge`**, not "Enable MCP bridge" — the
-property is `enable_mcp_bridge`, its `name` is `"MCP bridge"`, its description is *"Permit the bridge to
-be started at all"*. Nothing is listening until that tick is on: `pickik.mcp_start`'s `poll()` refuses
-without it (`__init__.py:1708`).
+Two things about that path are worth knowing before you look, because each cost a person an hour once.
+The knobs live in **two** places now: the box drawn by `PICKIK_PT_main` (`__init__.py:1413`,
+`bl_space_type='VIEW_3D'`, `bl_region_type='UI'`, `bl_category="PickIK"`), and — since the binding fix
+— `Edit ▸ Preferences ▸ Add-ons ▸ PickIK arm7`. Before that fix the preferences page rendered *nothing
+at all* for this add-on, because `PICKIK_PG_preferences` declared eight properties and no `draw()`.
+And the tick is labelled **`MCP bridge`**, not "Enable MCP bridge" — the property is
+`enable_mcp_bridge`, its `name` is `"MCP bridge"`, its description is *"Permit the bridge to be started
+at all"*. Nothing is listening until that tick is on, and `pickik.mcp_start`'s `poll()` hides **Start**
+until it is (`__init__.py:1708`) — an unticked box offers no button whatever, and that is the gate
+working rather than a control missing.
+
+> If that box prints `preferences unavailable in this session: the bridge runs on defaults` and shows no
+> tick at all, the add-on's preference block has not bound. The one line that binds it is `bl_idname` on
+> `PICKIK_PG_preferences`, which must read **the package name**, `__package__`. Measured on 3.4.1 and
+> 4.5.3 by re-registering that single class under each candidate and reading back what the block hands
+> out: `"blender_ik_addon"` yields a `PICKIK_PG_preferences` carrying its eight properties, while
+> `"USERPREF_BLENDER_IK_ADDON"` and the `"USERPREF_addon_…"` string the file once carried both yield
+> `NoneType` — and with that, every control in the box goes undrawn and `Start` becomes clickable with
+> no permission ever given. `bool_tool`, which works, ships `bl_idname = __package__`.
 
 The panel should then say, in its status box:
 
