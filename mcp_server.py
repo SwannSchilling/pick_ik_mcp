@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
+from functools import partial                     # binds dispatch's keyword-only runtime_file, below
 import json
 import os
 import sys
@@ -213,8 +214,13 @@ def _malfunction(code: str, detail: str) -> dict:
 
 
 # ---------------------------------------------------------------------- dispatch and status --
-def _status_payload() -> dict:
-    payload = describe_endpoint()
+def _status_payload(runtime_file: str = "") -> dict:
+    #: Given a record to read, read that one; given none, read the one everybody reads. The second
+    #: half used to be the only half, which is how this tool came to report on an endpoint it had not
+    #: been told about: `dispatch` binds `runtime_file` on every path and then threw it away here, so
+    #: the one tool an agent is told to call first kept answering from the default location however
+    #: the config or the command line named it.
+    payload = describe_endpoint(runtime_file) if runtime_file else describe_endpoint()
     payload.update({"ok": True, "server": SERVER_NAME, "version": SERVER_VERSION,
                     "proto_rev": P.proto_rev(), "tools": len(TOOLS),
                     "answered": sorted(CMD_OF_TOOL.values()),
@@ -262,7 +268,7 @@ def dispatch(name: str, arguments: dict, *, runtime_file: str = "",
     """Route one tool call. Returns the payload the agent reads, always a dict, never raises."""
     name = str(name or "")
     if name == "pickik_bridge_status":
-        return _status_payload()
+        return _status_payload(runtime_file)
     cmd = CMD_OF_TOOL.get(name)
     if cmd is None:
         return _malfunction("NO_SUCH_TOOL", f"{name!r} is not a tool of this server")
@@ -317,8 +323,16 @@ def build_server(config: dict | None = None) -> Server:
 
     @server.call_tool()
     async def _call_tool(name: str, arguments: dict | None) -> mt.CallToolResult:
+        #: dispatch takes runtime_file keyword-only; run_in_executor forwards positional arguments
+        #: only and has no **kwargs to carry one, so the keyword never arrived and every tool call
+        #: died with "unexpected keyword argument 'runtime_file'" before a socket was opened. Bind it
+        #: into the callable instead: partial hands the keyword to dispatch at the call, and the hop
+        #: stays (executor, func, *args), which is the one shape both APIs agree on. to_thread was
+        #: the other candidate and is not taken: on this interpreter it introspects as
+        #: to_thread(func, /, *args, **kwargs), with no executor to be had, so a None passed there
+        #: would be tried as a callable and would raise "'NoneType' object is not callable".
         payload = await asyncio.get_event_loop().run_in_executor(
-            None, dispatch, name, dict(arguments or {}), runtime_file=runtime_file)
+            None, partial(dispatch, runtime_file=runtime_file), name, dict(arguments or {}))
         broken = str(payload.get("code", "")).startswith("E_MCP_")
         # `isError` is for a malfunction -- the link died, the name is unknown, this server broke. A
         # refusal from the bridge is an ANSWER, and marking an answer as an error is how an agent's
@@ -371,8 +385,10 @@ def main(argv: list | None = None) -> int:
               f"{len(CMD_OF_TOOL)} of {len(P.COMMANDS)} catalogue commands answered)")
         if args.check:
             print(f"\n== instructions the client receives ==\n{INSTRUCTIONS}")
-            print("\n== what the bridge reports ==")
-            print(json.dumps(describe_endpoint(), indent=1, sort_keys=True))
+            _rec = str(config.get("runtime_file") or "")
+            print(f"\n== what the bridge reports, read from {_rec or 'the default record'} ==")
+            print(json.dumps(describe_endpoint(_rec) if _rec else describe_endpoint(),
+                            indent=1, sort_keys=True))
         print(f"\n== tools ==")
         for tool in TOOLS:
             cmd = CMD_OF_TOOL.get(tool.name)

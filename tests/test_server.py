@@ -722,6 +722,98 @@ def test_the_server_is_wired_and_speaks_mcp() -> None:
           f"{len(S.INSTRUCTIONS)} characters the client is told at initialize")
 
 
+def test_a_tool_call_survives_the_hop_into_a_thread() -> None:
+    #: The one path every agent takes and no check above had ever walked: the registered call_tool
+    #: handler, reached over stdio the way a real client reaches it. Every other test here goes into
+    #: `dispatch` directly, through the helper at the head of the file, and so the line that handed a
+    #: keyword to the event loop -- which takes positional arguments only, and has no **kwargs to
+    #: carry one -- was free to raise on every single call, deterministically, for as long as it was
+    #: shipped, with this file green the whole time. A server that answers its own tools/list and its
+    #: own tools/call, over the transport a client actually uses, is the only witness that admits it.
+    #: `pickik_bridge_status` is the tool to ask: it answers about the endpoint without opening a
+    #: socket at it, so this can take neither the one seat a live agent is holding nor a dependency
+    #: on somebody's Blender being switched on. The record is absent on purpose, which is what makes
+    #: `found` below a fact and not a weather report.
+    import subprocess
+    if not S.HAVE_SDK:
+        check("a tool call survives the hop into a thread", True,
+              f"skipped, and said so: the SDK is absent ({S._SDK_ERROR!r})")
+        return
+    with _tmpdir() as tmp:
+        record = os.path.join(tmp, "no-such-record.json")
+        proc = None
+        try:
+            proc = subprocess.Popen([sys.executable, "-u", os.path.join(_PKG, "mcp_server.py"),
+                                    "--runtime-file", record],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+            lines = []
+            def pump(pipe):
+                for line in pipe:
+                    lines.append(line.rstrip())
+            for pipe in (proc.stdout, proc.stderr):
+                threading.Thread(target=pump, args=(pipe,), daemon=True).start()
+            def speak(obj):
+                proc.stdin.write(json.dumps(obj) + "\n")
+                proc.stdin.flush()
+            def listen_for(wanted, secs):
+                mark = f'"id":{wanted}'
+                end = time.time() + secs
+                while time.time() < end:
+                    for line in lines:
+                        if mark in line.replace(" ", ""):
+                            return line
+                    time.sleep(0.15)
+                return None
+            speak({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params":
+                   {"protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "pickik-suite", "version": "0"}}})
+            if listen_for(1, 15) is None:
+                check("a tool call survives the hop into a thread", False,
+                      "the server never answered initialize, so nothing below it can be believed")
+                return
+            speak({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            speak({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                   "params": {"name": "pickik_bridge_status", "arguments": {}}})
+            answer = listen_for(2, 25)
+            if answer is None:
+                check("a tool call survives the hop into a thread", False,
+                      "tools/call was never answered: the handler is wedged")
+                return
+            doc = json.loads(answer)
+            if doc.get("error"):
+                check("a tool call survives the hop into a thread", False,
+                      f"the transport refused the call: {json.dumps(doc['error'])[:170]}")
+                return
+            result = doc.get("result") or {}
+            text = "".join(one.get("text", "") for one in result.get("content", []))
+            #: Two literals, and deliberately neither of them the name of the helper that was at fault:
+            #: a check that spells the thing it is looking for is a check that can only ever find what
+            #: it has been written to find.
+            broken = "unexpected keyword argument" in text or "not callable" in text
+            payload = {}
+            try:
+                payload = json.loads(text)
+            except ValueError:
+                pass
+            check("a tool call survives the hop into a thread",
+                  result.get("isError") is False and not broken
+                  and payload.get("ok") is True and payload.get("found") is False,
+                  f"isError={result.get('isError')}, ok={payload.get('ok')}, "
+                  f"found={payload.get('found')} (the record is absent on purpose), and the text "
+                  f"reads {text[:118]!r}")
+        except BaseException as exc:
+            check("a tool call survives the hop into a thread", False,
+                  f"{type(exc).__name__}: {exc}")
+        finally:
+            if proc is not None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except BaseException:
+                    pass                                    # a child left running is a fact, not a failure
+
+
 def test_an_unrecognised_option_is_not_ignored() -> None:
     for name, bad in (("a typo", {"auto_approve_all": True}),
                       ("a gate bypass", {"skip_gate": True}),
@@ -1190,6 +1282,7 @@ def main() -> int:
              test_a_tool_that_is_not_a_tool_is_answered_without_being_name_resolved,
              test_a_reply_is_bounded_and_says_so, test_the_handshake_is_verified_before_anything_else,
              test_the_token_is_never_echoed, test_the_server_is_wired_and_speaks_mcp,
+             test_a_tool_call_survives_the_hop_into_a_thread,
              test_an_unrecognised_option_is_not_ignored, test_the_answered_set_is_read_and_not_transcribed]
     #: Which tests were actually entered. Kept so that a run cut short can say what is missing from it,
     #: and not merely how many checks it happened to make: the last such run read "13 checks" while eight
