@@ -76,37 +76,37 @@ written. The 14 Phase 1 tools are the rows marked `yes` below.
 
 | cmd | class | exec | gate | answered here |
 |---|---|---|---|---|
-| `build_rig` | write | tick | — | ? |
-| `delete_rig` | write | tick | `confirm` | ? |
-| `export_urdf` | write | tick | — | ? |
-| `get_robot_info` | read | tick | — | ? |
-| `get_state` | read | tick | — | ? |
-| `get_target` | read | tick | — | ? |
-| `hw_analyze_frame` | pure | worker | — | ? |
-| `hw_check` | hw | worker | — | ? |
-| `hw_configure` | write | tick | `confirm` | ? |
-| `hw_disconnect` | hw | worker | `confirm` | ? |
-| `hw_get_info` | read | tick | — | ? |
-| `hw_install` | hw | worker | `confirm` | ? |
-| `hw_live_start` | hw | worker | `arm` | ? |
-| `hw_live_stop` | hw | worker | — | ? |
-| `hw_live_update` | hw | worker | `arm` | ? |
-| `hw_motors_move` | hw | worker | `arm` | ? |
-| `hw_motors_set_zero` | hw | worker | `arm` | ? |
-| `hw_motors_stop` | priority | receiver | — | ? |
-| `hw_read_telemetry` | hw | worker | — | ? |
-| `hw_send_frame` | hw | worker | `arm` | ? |
-| `hw_status` | read | tick | — | ? |
-| `set_continuous` | write | tick | — | ? |
-| `set_joint_angles` | write | tick | — | ? |
-| `set_solver` | write | tick | — | ? |
-| `set_solver_config` | write | tick | — | ? |
-| `set_target` | write | tick | — | ? |
-| `solve_ik` | write | tick | — | ? |
-| `status` | read | tick | — | ? |
-| `validate_pose` | pure | worker | — | ? |
+| `build_rig` | write | tick | — | yes |
+| `delete_rig` | write | tick | `confirm` | yes |
+| `export_urdf` | write | tick | — | yes |
+| `get_robot_info` | read | tick | — | yes |
+| `get_state` | read | tick | — | yes |
+| `get_target` | read | tick | — | yes |
+| `hw_analyze_frame` | pure | worker | — | — |
+| `hw_check` | hw | worker | — | — |
+| `hw_configure` | write | tick | `confirm` | — |
+| `hw_disconnect` | hw | worker | `confirm` | — |
+| `hw_get_info` | read | tick | — | — |
+| `hw_install` | hw | worker | `confirm` | — |
+| `hw_live_start` | hw | worker | `arm` | — |
+| `hw_live_stop` | hw | worker | — | — |
+| `hw_live_update` | hw | worker | `arm` | — |
+| `hw_motors_move` | hw | worker | `arm` | — |
+| `hw_motors_set_zero` | hw | worker | `arm` | — |
+| `hw_motors_stop` | priority | receiver | — | — |
+| `hw_read_telemetry` | hw | worker | — | — |
+| `hw_send_frame` | hw | worker | `arm` | — |
+| `hw_status` | read | tick | — | — |
+| `set_continuous` | write | tick | — | yes |
+| `set_joint_angles` | write | tick | — | yes |
+| `set_solver` | write | tick | — | yes |
+| `set_solver_config` | write | tick | — | yes |
+| `set_target` | write | tick | — | yes |
+| `solve_ik` | write | tick | — | yes |
+| `status` | read | tick | — | yes |
+| `validate_pose` | pure | worker | — | yes |
 
-_Generated from `mcp_protocol`: proto_rev `149100862958`, 29 commands, 0 answered in this build. Nothing between the sentinels is hand-written; edit `mcp_docs.py` or the catalogue instead._
+_Generated from `mcp_protocol`: proto_rev `5bc953006c6e`, 29 commands, 14 answered in this build. Nothing between the sentinels is hand-written; edit `mcp_docs.py` or the catalogue instead._
 
 <!-- CATALOGUE-END:tools -->
 

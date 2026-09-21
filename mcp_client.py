@@ -209,23 +209,31 @@ class Bridge:
             except OSError:
                 pass                          # a delay we could not remove is not a reason to fail
             self._sock, self._buf = sock, b""
-            hello = self._request("hello", {"proto_rev": self.proto_rev, "client": CLIENT_NAME,
-                                           "token": self.token})
-            #: Believed, which is what the line above promises and this is the half that was missing. The
-            #: bridge answers a hello it will not admit with `ok: False` and a code -- a token it does not
-            #: recognise, a protocol it does not speak -- and what came back was until now carried
-            #: straight down to `self.connected = True` without once being looked at. A refused handshake
-            #: is not a connection: every command that followed was written down a link the bridge had
-            #: already turned away, and the caller told that all was well. Raised inside the `try` above,
-            #: so that the handler there closes the socket and the bridge is left as it was found. The
-            #: kind is the bridge's own code with its prefix taken off, which is how `why` comes to read
-            #: `acces: ...` and an operator can tell a wrong secret from a wrong revision without
-            #: trusting to a second hand; the secret itself is named by neither, which is a check in the
-            #: suite and not merely a courtesy.
-            if not hello.get("ok"):
+            #: The greeting comes from the authority, and is not assembled here. The dialect puts it
+            #: under "hello", with the secret under "auth" and the revision beside it
+            #: (mcp_protocol.hello, and MCP_INTEGRATION_PLAN.md §the wire, which shows the arrow going
+            #: in as a hello frame and not as a command envelope); the bridge validates precisely that
+            #: shape and answers anything else with E_PROTO "expected a hello frame". A hello is not a
+            #: command: the two frames are not interchangeable however the fields are arranged, and this
+            #: site had been sending the command envelope with cmd="hello", which no bridge ever
+            #: accepted -- the first real round trip in the project's history is what found it.
+            self._send(P.hello(proto_rev=self.proto_rev, token=self.token, client=CLIENT_NAME))
+            hello = self._recv_frame()
+            #: Believed, which is what the line above promises and this is the half that was missing.
+            #: A greeting is what the bridge admits with; anything else is a refusal carrying a code --
+            #: a secret it does not recognise, a revision it does not speak -- and what came back was
+            #: until now carried straight down to `self.connected = True` without once being looked at.
+            #: A refused handshake is not a connection: every command that followed was written down a
+            #: link the bridge had already turned away, and the caller told that all was well. Raised
+            #: inside the `try` above, so that the handler there closes the socket and the bridge is
+            #: left as it was found. The kind is the bridge's own code with its prefix taken off, which
+            #: is how `why` comes to read `acces: ...` and an operator can tell a wrong secret from a
+            #: wrong revision without trusting to a second hand; the secret itself is named by neither,
+            #: which is a check in the suite and not merely a courtesy.
+            if not isinstance(hello.get("hello"), dict):
                 error = hello.get("error") or {}
                 code = str(error.get("code") or "unknown")
-                reason = str(error.get("message") or "the bridge gave no reason")
+                reason = str(error.get("message") or "the bridge answered with neither a greeting nor a reason")
                 kind = code.lower()
                 if kind.startswith("e_"):
                     kind = kind[2:]

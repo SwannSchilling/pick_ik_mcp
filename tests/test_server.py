@@ -255,7 +255,8 @@ class FakeBridge(threading.Thread):
                     continue
                 #: Entered before the frame is kept and before it is answered: when the death is in the
                 #: answer, the record still has to say what was being answered when it came.
-                self._log("recv", f"{frame.get('cmd')} id={frame.get('id')} of {len(line)} bytes, "
+                seen = frame.get("cmd") or ("hello" if isinstance(frame.get("hello"), dict) else None)
+                self._log("recv", f"{seen} id={frame.get('id')} of {len(line)} bytes, "
                               f"{len(buf)} still buffered after it")
                 self.received.append(frame)
                 self._answer(conn, frame)
@@ -264,28 +265,39 @@ class FakeBridge(threading.Thread):
     def _answer(self, conn: socket.socket, frame: dict) -> None:
         cmd, req_id = frame.get("cmd"), frame.get("id")
         args = frame.get("args") or {}
-        if cmd == "hello":
-            if str(args.get("token", "")) != self.token:
+        #: The greeting is a frame of its own -- {"hello": {...}} with the secret under "auth", per
+        #: mcp_protocol.hello and the arrow in the integration plan. This site used to answer it in the
+        #: command envelope, because that was the shape the client happened to send, and so the
+        #: stand-in agreed with the client instead of with the bridge -- and a witness that agrees
+        #: with the defendant has not witnessed anything. It now takes what the real bridge takes and
+        #: refuses what the real bridge refuses, in the real bridge's own words, so a client assembled
+        #: to the wrong shape fails here precisely as it fails there.
+        if isinstance(frame.get("hello"), dict):
+            hs = frame["hello"]
+            if str(hs.get("auth", "")) != self.token:
                 self._log("answer", "auth failed, refusing the session")
-                conn.sendall(P.encode({"ok": False, "id": req_id,
-                                        "error": {"code": P.ERR.ACCES, "message": "auth failed"}}))
+                conn.sendall(P.encode(P.error_response(req_id, P.ERR.ACCES, "auth failed")))
                 return
-            if str(args.get("proto_rev", "")) != self.proto_rev:
+            if str(hs.get("proto_rev", "")) != self.proto_rev:
                 self._log("answer", f"proto_rev mismatch, refusing: bridge {self.proto_rev} "
-                               f"!= client {args.get('proto_rev')!r}")
-                conn.sendall(P.encode({"ok": False, "id": req_id, "cmd": "hello",
-                                        "error": {"code": P.ERR.PROTO,
-                                                "message": f"proto_rev mismatch: bridge "
-                                                        f"{self.proto_rev} != client "
-                                                        f"{args.get('proto_rev')!r}"}}))
+                               f"!= client {hs.get('proto_rev')!r}")
+                conn.sendall(P.encode(P.error_response(
+                    req_id, P.ERR.PROTO,
+                    f"proto_rev mismatch: bridge {self.proto_rev} != client {hs.get('proto_rev')!r}")))
                 return
             #: Bracketed on both sides of the write, because a death between these two lines can only be
             #: a death inside `sendall`, and the hypotheses otherwise have to be told apart by their
             #: effect on the client, which is a far weaker record. The hello is what hypothesis 1 names.
             self._log("answer", "hello ok, sending the greeting")
-            conn.sendall(P.encode({"ok": True, "id": req_id, "cmd": "hello", "data": {
-                "protocol": P.PROTOCOL, "proto_rev": self.proto_rev, "server": "fake"}}))
+            conn.sendall(P.encode({"hello": {"protocol": P.PROTOCOL, "proto_rev": self.proto_rev,
+                                            "server": "fake",
+                                            "hw": {"present": False, "enabled": False}}}))
             self._log("answer", "the greeting is off the wire")
+            return
+        if cmd == "hello":
+            self._log("answer", "a hello arrived inside a command envelope; the bridge answers this "
+                               "with E_PROTO and so, now, does this")
+            conn.sendall(P.encode(P.error_response(req_id, P.ERR.PROTO, "expected a hello frame")))
             return
         if self.refuse is not None:
             code, message = self.refuse
@@ -820,6 +832,24 @@ def test_the_two_copies_of_the_protocol_have_not_drifted() -> None:
     original = digest(os.path.join(S.ADDON_DIR, "mcp_protocol.py"))
     check("the vendored protocol copy is still the add-on's own bytes", vendored == original,
           f"the two files digest to {vendored} and {original}")
+    #: The guard hashes the dialect, and used to fold into it the bookkeeping that vars() carries on a
+    #: class beside its members -- among those the module's own import name, which reads
+    #: "blender_ik_addon.mcp_protocol" inside Blender and "mcp_protocol" out of the vendored copy. The
+    #: two ends of one socket, on one file, on one day, then computed two revisions, and every
+    #: handshake died at E_PROTO before a command was ever spoken. Nothing in this suite could see it,
+    #: because both of its bridges were built from the same copy under the same name and so agreed
+    #: with each other instead of with the pair they stand for. One file, reached two ways, must agree.
+    import types as _types
+    def _reached_as(name):
+        path = os.path.join(_PKG, "vendored", "mcp_protocol.py")
+        mod = _types.ModuleType(name); mod.__file__ = path
+        exec(compile(open(path, encoding="utf-8").read(), path, "exec"), mod.__dict__)
+        return mod
+    bare, qualified = _reached_as("mcp_protocol"), _reached_as("blender_ik_addon.mcp_protocol")
+    check("the drift guard depends on the dialect alone, not on how the module was reached",
+          bare.proto_rev() == qualified.proto_rev() == P.proto_rev(),
+          f"reached as mcp_protocol it says {bare.proto_rev()}, as the add-on's submodule "
+          f"{qualified.proto_rev()}, and the running build says {P.proto_rev()}")
     doc = os.path.join(_PKG, "SERVER_DESIGN.md")
     quoted = set()
     try:
