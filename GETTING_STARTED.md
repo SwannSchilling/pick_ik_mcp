@@ -65,11 +65,19 @@ working rather than a control missing.
 > `NoneType` — and with that, every control in the box goes undrawn and `Start` becomes clickable with
 > no permission ever given. `bool_tool`, which works, ships `bl_idname = __package__`.
 
-The panel should then say, in its status box:
+Two strings appear, from two different places, and conflating them costs a person a search. The panel's
+own running arm, once `mcp_bridge.get()` answers, draws:
 
 ```
-MCP bridge on 127.0.0.1:9876 — auth required — runtime C:\Users\<you>\.pickik\bridge.json
+listening on 127.0.0.1:9876 · client no · queue 0
+auth: token required (generated, not shown here)
+runtime file C:\Users\<you>\.pickik\bridge.json
 ```
+
+while `MCP bridge on 127.0.0.1:9876 · auth required · runtime …` is what the **operator** writes into
+`scene.pickik.status`, the shared line the solver and the continuous drive also use — a different
+surface, at a different place in the panel. Both are quoted from a measured run, not from the source's
+intent.
 
 Every number and name in that box is published, not asserted: the port is the one that was **bound**,
 which is written out to the record below, so `Port` set to `0` (let the system choose) is a working
