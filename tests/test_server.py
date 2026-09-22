@@ -189,6 +189,13 @@ class FakeBridge(threading.Thread):
         self.received: list = []                       # every frame decoded off the wire, in order
         self.reply_over = dict(reply_over or {})       # cmd -> a whole reply object to send instead
         self.refuse = None                             # (code, message) to answer everything with
+        #: Frames served before the peer goes away, and only on the FIRST session. None keeps the
+        #: session open, which is how this has always behaved; a number closes the socket after that
+        #: many frames, which is the drop the bridge commits when a client says nothing for as long as
+        #: its read patience. Only the first session is dropped, so that a retry has something to
+        #: reconnect to and the count of what came back is the evidence and not a hope.
+        self.drop_after = None
+        self._served = 0
         self.accepted = 0
         #: The connection presently being served, if any. Named for `halt` alone: a stopper that is set
         #: does not interrupt a `recv` already in progress, and the listener that is closed reaches no
@@ -260,6 +267,18 @@ class FakeBridge(threading.Thread):
                               f"{len(buf)} still buffered after it")
                 self.received.append(frame)
                 self._answer(conn, frame)
+                self._served += 1
+                if (self.drop_after is not None and self.accepted == 1
+                        and self._served >= self.drop_after):
+                    #: The peer goes away mid-session, which is the fault the suite has never driven:
+                    #: every other test here has a session that lives, so the whole class of "the first
+                    #: frame after an idle gap" was unasserted while it was being shipped.
+                    self._log("serve", f"the peer goes away after {self._served} frames, mid-session")
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    return
         self._log("serve", "left the read loop on the stopper")
 
     def _answer(self, conn: socket.socket, frame: dict) -> None:
@@ -577,6 +596,57 @@ def test_a_refusal_is_an_answer_and_not_a_malfunction() -> None:
         check("a busy rig is not retried by the proxy", len(busy.received) == 2,
               f"{len(busy.received)} frames on the wire")
         busy.halt()
+
+
+def test_a_frame_onto_a_dead_session_is_reissued_once_for_a_read_and_never_for_a_write() -> None:
+    #: The fault an operator actually meets and no check ever drove: the bridge drops a client that
+    #: says nothing for as long as its own read patience, frees its one seat, and leaves the server
+    #: holding a session it still believes in. What has to follow is different for the two classes of
+    #: command, and that difference is the whole of the safety argument -- a read that cannot have
+    #: written anything may be sent once more, a write may not be sent at all -- so both are driven
+    #: here, over one socket, against one fake, and the count of what came back is the evidence.
+    #: The read wants two sessions and two of its frames; the write wants one session and one frame,
+    #: and a second of either is the bug, not the cure.
+    for tool, cls, want_ok, want_accepts, want_frames in (
+            ("pickik_status", "read", True, 2, 1),
+            ("pickik_set_target", "write", False, 1, 0)):
+        with _tmpdir() as tmp:
+            fake = FakeBridge()
+            fake.drop_after = 1                                      # away it goes, after the greeting
+            fake.start()
+            record = fake.publish(tmp)
+            payload = call(tool, {}, runtime_file=record)
+            cmd = S.CMD_OF_TOOL.get(tool, "")
+            #: A frame written into a socket the peer has already forgotten is never decoded at the far
+            #: end, so it is not in `received` at all: the read's one re-issue is the one frame the rig
+            #: ever saw, and the write's single attempt is a frame nobody saw. Which is why the evidence
+            #: of a re-issue is the count of ACCEPTS and not the count of frames -- two beside a read is
+            #: the cure, and two beside a write would be the bug.
+            sent = [one for one in fake.received if one.get("cmd") == cmd]
+            check(f"a {cls} crosses a session the peer closed, over exactly one re-issue or none",
+                  payload.get("ok") is want_ok and fake.accepted == want_accepts
+                  and len(sent) == want_frames,
+                  f"{tool}: ok={payload.get('ok')} want_ok={want_ok} accepted={fake.accepted} "
+                  f"want_accepts={want_accepts} frames_of_{cmd}={len(sent)} want={want_frames} "
+                  f"code={_the_code_of(payload)}")
+            if not want_ok:
+                #: And the malfunction has to say which end of the wire is at fault, in words a caller
+                #: can act on: retry_safe false, because nothing here may be re-issued, and a proof read
+                #: off the published record -- read, not probed, the seat being single -- so that nobody
+                #: restarts a Blender that was never the problem.
+                check(f"a {cls} is not re-issued, whatever the caller does next",
+                      str(payload.get("code", "")).startswith("E_MCP_")
+                      and payload.get("retry_safe") is False
+                      and payload.get("leg") == "mcp-server"
+                      and (payload.get("proof") or {}).get("found") is True,
+                      f"code={payload.get('code')} retry_safe={payload.get('retry_safe')} "
+                      f"leg={payload.get('leg')!r} proof={payload.get('proof')}")
+            fake.halt()
+            #: And the session goes with the fixture. Left connected, the latch hands it to the next
+            #: test as if it were the bridge that test had just published -- which is the very defect
+            #: this file is about, reproduced one test on the next, and it was: the handshake test woke
+            #: up addressed to somebody else's host and port.
+            S._close_bridge()
 
 
 def test_a_tool_that_is_not_a_tool_is_answered_without_being_name_resolved() -> None:
@@ -1278,6 +1348,7 @@ def main() -> int:
              test_the_tool_table_and_the_absence_of_a_start_button,
              test_the_status_tool_tells_a_human_how_to_start,
              test_a_frame_is_sent_and_the_reply_comes_back_unchanged,
+             test_a_frame_onto_a_dead_session_is_reissued_once_for_a_read_and_never_for_a_write,
              test_a_refusal_is_an_answer_and_not_a_malfunction,
              test_a_tool_that_is_not_a_tool_is_answered_without_being_name_resolved,
              test_a_reply_is_bounded_and_says_so, test_the_handshake_is_verified_before_anything_else,

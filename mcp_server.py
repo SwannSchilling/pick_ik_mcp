@@ -26,6 +26,8 @@ from functools import partial                     # binds dispatch's keyword-onl
 import json
 import os
 import sys
+import threading
+import time
 
 _HERE = os.path.dirname(os.path.realpath(__file__))
 for _cand in (os.path.join(_HERE, "vendored"), os.environ.get("PICKIK_ADDON_TREE", "").strip() or None):
@@ -35,7 +37,7 @@ for _cand in (os.path.join(_HERE, "vendored"), os.environ.get("PICKIK_ADDON_TREE
         break
 
 import mcp_protocol as P  # noqa: E402
-from mcp_client import Bridge, BridgeGone, describe_endpoint  # noqa: E402
+from mcp_client import Bridge, BridgeGone, describe_endpoint, read_runtime  # noqa: E402
 
 try:                                                      # the SDK is needed only in order to serve
     from mcp import types as mt                           # noqa: E402
@@ -44,6 +46,24 @@ try:                                                      # the SDK is needed on
     HAVE_SDK, _SDK_ERROR = True, None
 except BaseException as _exc:                             # an absent SDK is a fact to report, not crash
     HAVE_SDK, _SDK_ERROR = False, _exc
+
+if not HAVE_SDK:
+    #: The line above is a promise, and until this block it was a promise the module did not keep.
+    #: `_build_tools` constructs Tool(...) at module scope, so on an interpreter without the SDK an
+    #: ordinary `import mcp_server` raised NameError on the name `mt` -- taking `--check` with it,
+    #: which is the very command this file recommends for precisely this case ("run --check to see the
+    #: tools without it"). Serving needs the SDK: it needs Result types, a Server, and a stdio pair.
+    #: Describing the tools needs a record with a name in it, and that much an absent mcp is readily
+    #: supplied. The name is kept, so that the builder below never notices which half it is reading.
+    class _ToolRecord:
+        """The shape of an SDK Tool, and nothing beyond it."""
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+    class _Types:
+        """The one member of the SDK's types that the describing of the tools reads from."""
+        Tool = _ToolRecord
+
+    mt = _Types                                             # noqa: E402
 
 SERVER_NAME = "pickik"
 SERVER_TITLE = "PickIK arm7 through the Blender add-on"
@@ -205,26 +225,99 @@ def _result(payload: dict) -> list:
     return [mt.TextContent(type="text", text=body)]
 
 
-def _malfunction(code: str, detail: str) -> dict:
+#: A link fault of these kinds proves the socket dead, and a dead socket can have carried no work that
+#: was not already answered: it is safe to connect once more and to send once more. `timeout` is NOT
+#: among them -- this file's own standing definition makes a timed-out command OUTCOME_UNKNOWN, and no
+#: read-only class shall be stretched into authorising the re-issue of an unknown. Where that rule is
+#: wanted, the owner of the deadline will have to say so; it is not this patch's to decide.
+_REISSUABLE_KINDS = frozenset({"reset", "closed"})
+#: One session, one socket, one hand upon it. The bridge admits a single client, so two threads driving
+#: one socket at once is undefined behaviour; this lock is not an optimisation, it is the write mode.
+_link_guard = threading.Lock()
+#: When a session last answered. Zero until it does, and reset by the close: a latch that has never
+#: seen a reply cannot claim the link is up. Only a call that came back ok is proof.
+_last_success = 0.0
+
+
+def _malfunction(code: str, detail: str, retry_safe: bool = False,
+                 proof: dict | None = None) -> dict:
     """A failure of *this server* or of the link -- marked so that a caller can tell it apart from a
     refusal by the rig, which arrives as the bridge's own payload instead."""
-    return {"ok": False, "server": SERVER_NAME, "code": f"E_MCP_{code}",
-            "error": {"code": f"E_MCP_{code}", "message": detail}, "retry_safe": False,
-            "note": "this came from the MCP server, not from the bridge"}
+    out = {"ok": False, "server": SERVER_NAME, "code": f"E_MCP_{code}",
+           "error": {"code": f"E_MCP_{code}", "message": detail}, "retry_safe": retry_safe,
+           "leg": "mcp-server",
+           "note": "this came from the MCP server, not from the bridge"}
+    if proof:
+        #: Which end of the wire is at fault is the question a caller is really asking, and the record
+        #: answers it without a socket being opened: a bridge reporting itself running while this
+        #: server reports the link dead is a fault of ours, and nobody should restart Blender for it.
+        out["proof"] = proof
+    return out
+
+
+def _their_side_of_the_wire(runtime_file: str) -> dict:
+    """What the add-on published about the session, read off its record and out of no socket. The
+    secret is popped here as ever it is popped, which is the one rule of every secret payload. Read
+    and not probed, deliberately: the bridge admits one client, so a server that rang the number to
+    ask whether the peer was in would be taking the one seat a caller may be waiting upon. The count
+    of accepts in the check below is what found that out, and it found it out of a patch that had
+    meant well."""
+    rec = read_runtime(runtime_file) or {}
+    keep = {k: rec.get(k) for k in ("running", "host", "port", "pid", "proto_rev")}
+    keep["found"] = bool(rec)
+    keep["source"] = "the record the bridge published, not a probe of the socket"
+    for secret in ("token", "auth_token"):
+        keep.pop(secret, None)
+    return keep
 
 
 # ---------------------------------------------------------------------- dispatch and status --
-def _status_payload(runtime_file: str = "") -> dict:
+def _status_payload(runtime_file: str = "", probe: bool = True) -> dict:
     #: Given a record to read, read that one; given none, read the one everybody reads. The second
     #: half used to be the only half, which is how this tool came to report on an endpoint it had not
     #: been told about: `dispatch` binds `runtime_file` on every path and then threw it away here, so
     #: the one tool an agent is told to call first kept answering from the default location however
     #: the config or the command line named it.
-    payload = describe_endpoint(runtime_file) if runtime_file else describe_endpoint()
+    #:
+    #: `probe` is the difference between a status tool and an error path. Probing opens a session --
+    #: the bridge admits one -- so it is done when a caller asks how the bridge is, and not done when
+    #: this server is already on its way back with a fault of its own. A patch that forgot that
+    #: difference took the single seat on the way out, and raised on a record naming somebody else's
+    #: host, which is the one thing a report of a failure may never be allowed to do.
+    if not probe:
+        payload = _their_side_of_the_wire(runtime_file)
+        payload.setdefault("why", "not probed: the record was read and the socket was not opened")
+    else:
+        try:
+            payload = describe_endpoint(runtime_file) if runtime_file else describe_endpoint()
+        except BridgeGone as exc:
+            #: A record naming a host this client will not speak to, or a probe that cannot be made, is
+            #: an answer and not an exception: the contract on the tool that reports the link is that it
+            #: reports, whatever the link ends up doing to it.
+            payload = {"found": False, "running": False, "why": f"{exc.kind}: {exc.detail}"}
+    latched = bool(_bridge is not None and _bridge.connected)
+    if latched and _last_success > 0 and payload.get("running") is False:
+        #: The probe opens a session to ask the far side whether it is there, and the bridge admits
+        #: exactly one: so when this server is already holding that one, the probe is refused by the
+        #: policy of being single, and the tool an agent is told to call first reports the bridge DOWN
+        #: while the session it has just refused is the proof that the bridge is UP. The nearer
+        #: evidence wins, and it is not a latch being believed -- it is a call that came back ok.
+        payload["running"] = True
+        payload["running_how"] = ("a call this server made came back answered; the probe that would "
+                                 "otherwise have said so was itself refused, for holding the one seat")
     payload.update({"ok": True, "server": SERVER_NAME, "version": SERVER_VERSION,
                     "proto_rev": P.proto_rev(), "tools": len(TOOLS),
                     "answered": sorted(CMD_OF_TOOL.values()),
-                    "connected": bool(_bridge is not None and _bridge.connected)})
+                    "connected": bool(_bridge is not None and _bridge.connected),
+                    #: Three words, three meanings, one of them a latch. `connected` and its true name
+                    #: `session_latched` say a session was admitted and has not been seen to fail;
+                    #: nothing between them and the next call probes the peer. `link_alive` is the
+                    #: weaker claim and the stronger evidence: it goes true only once a call has come
+                    #: back ok since the session was opened, and false again at the close. Read the
+                    #: first two as a hint about intent; read the third as a measurement.
+                    "session_latched": bool(_bridge is not None and _bridge.connected),
+                    "link_alive": bool(_bridge is not None and _bridge.connected
+                                       and _last_success > 0)})
     for key in ("token", "auth_token"):                   # never echoed, whatever the record holds
         payload.pop(key, None)
     return payload
@@ -257,10 +350,11 @@ def _ensure_bridge(runtime_file: str) -> Bridge:
 
 
 def _close_bridge() -> None:
-    global _bridge
+    global _bridge, _last_success
     if _bridge is not None:
         _bridge.close()
         _bridge = None
+    _last_success = 0.0                    # a session closed is a proof withdrawn, and is not kept
 
 
 def dispatch(name: str, arguments: dict, *, runtime_file: str = "",
@@ -280,19 +374,50 @@ def dispatch(name: str, arguments: dict, *, runtime_file: str = "",
     # absent. There is no assignment below that adds them; the AST gate in tests/test_server.py reads
     # this module and fails if one ever appears.
     args = dict(arguments)
+    global _last_success
     try:
-        bridge = connect(runtime_file or CONFIG_PATH)
+        with _link_guard:                                   # one hand upon the one session
+            bridge = connect(runtime_file or CONFIG_PATH)
     except BridgeGone as exc:
-        payload = _status_payload()
+        #: A connect that got this far and then failed leaves a half-open session behind, and the
+        #: bridge keeps but one seat: an abandoned session must close, or the next caller is refused by
+        #: a ghost rather than by a person.
+        _close_bridge()
+        payload = _status_payload(runtime_file, probe=False)
         payload.update({"ok": False, "cmd": cmd, "why": f"{exc.kind}: {exc.detail}",
                         "note": "no bridge answered. Start it in Blender (PickIK panel > Start MCP "
                                 "bridge); this server will not do that for you."})
         return payload
-    try:
-        reply = bridge.call(cmd, args, deadline_ms=spec.deadline_ms)
-    except BridgeGone as exc:                              # the link failed; that is not the rig refusing
-        _close_bridge()
-        return _malfunction("UNREACHABLE", f"{exc.kind}: {exc.detail}")
+    #: Send. And if the peer has closed the session under it -- an idle gap past the bridge's own read
+    #: patience, a human thinking between two of the caller's turns -- then the socket is dead, the
+    #: seat is freed, and the fail-safe latch is set on the far side. A read that cannot have written
+    #: anything may therefore be sent once more, once a session has been opened again. A write, a
+    #: command behind a gate, or a timeout whose outcome is unknown may not be sent at all, and is
+    #: reported instead. Re-issued exactly once, never more than once.
+    reissued = False
+    while True:
+        try:
+            with _link_guard:
+                reply = bridge.call(cmd, args, deadline_ms=spec.deadline_ms)
+            _last_success = time.monotonic()            # a call answered is the only proof there is
+            break
+        except BridgeGone as exc:                       # the link failed; that is not the rig refusing
+            _close_bridge()
+            reissuable = (spec.cls == P.CLASS.READ and spec.gate == P.GATE.NONE
+                        and exc.kind in _REISSUABLE_KINDS)
+            if not (reissuable and not reissued):
+                return _malfunction("UNREACHABLE", f"{exc.kind}: {exc.detail}", retry_safe=reissuable,
+                                   proof=_their_side_of_the_wire(runtime_file))
+            reissued = True
+            try:
+                with _link_guard:
+                    bridge = connect(runtime_file or CONFIG_PATH)
+            except BridgeGone as second:
+                _close_bridge()
+                return _malfunction("UNREACHABLE",
+                                    f"a dead link, and the reconnect after it died too "
+                                    f"({second.kind}: {second.detail})",
+                                    retry_safe=True, proof=_their_side_of_the_wire(runtime_file))
     if not isinstance(reply, dict):
         return {"ok": False, "cmd": cmd, "error": {"code": P.ERR.PROTO,
                 "message": f"the bridge answered with {type(reply).__name__}, not an object"}}
@@ -310,6 +435,11 @@ def dispatch(name: str, arguments: dict, *, runtime_file: str = "",
 # ------------------------------------------------------------------------ the server object --
 def build_server(config: dict | None = None) -> Server:
     cfg = dict(config or {})
+    if not HAVE_SDK:
+        #: The distinction the block above draws, drawn once more and in the place it can be acted on:
+        #: describing needs nothing beyond a record with a name, serving needs the SDK.
+        raise SystemExit(f"serving needs the mcp SDK, which this interpreter has not ({_SDK_ERROR}); "
+                         f"`pip install -r requirements.txt`, or run --check to see the tools without it")
     unknown = sorted(set(cfg) - CONFIG_KEYS)
     if unknown:                    # an unrecognised option is a mistake, and a silently ignored one worse
         raise SystemExit(f"unrecognised config keys: {unknown}; this server reads {sorted(CONFIG_KEYS)}")
