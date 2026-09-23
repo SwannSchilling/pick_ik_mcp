@@ -37,7 +37,12 @@ for _cand in (os.path.join(_HERE, "vendored"), os.environ.get("PICKIK_ADDON_TREE
         break
 
 import mcp_protocol as P  # noqa: E402
-from mcp_client import Bridge, BridgeGone, describe_endpoint, read_runtime  # noqa: E402
+#: The legs come from the client, which is the one place that ever stood where the fault happened and
+#: so is the only place entitled to say which leg it was. They are named there and read here, by the
+#: same words: a server that re-derived them from the fault's prose would be pattern-matching a string
+#: it does not own, and would be wrong the first time the wording was improved.
+from mcp_client import (Bridge, BridgeGone, describe_endpoint, read_runtime,          # noqa: E402
+                        _LEG_CONNECT, _LEG_HANDSHAKE, _LEG_SEND)                  # noqa: E402
 
 try:                                                      # the SDK is needed only in order to serve
     from mcp import types as mt                           # noqa: E402
@@ -231,6 +236,36 @@ def _result(payload: dict) -> list:
 #: read-only class shall be stretched into authorising the re-issue of an unknown. Where that rule is
 #: wanted, the owner of the deadline will have to say so; it is not this patch's to decide.
 _REISSUABLE_KINDS = frozenset({"reset", "closed"})
+#: The legs after which the command cannot have reached the rig: the opening, the greeting, and the
+#: writing of the frame itself. Standing on mcp_client's argument that sendall raises only while bytes
+#: are still owed, and that the last byte of a frame is its newline, what the far end can have of a
+#: command that failed on this leg is a line it will never dispatch. The answer leg is the one that is
+#: absent from this set, and it is absent because it is the one that proves nothing at all.
+_NEVER_TRAVELLED_LEGS = frozenset({_LEG_CONNECT, _LEG_HANDSHAKE, _LEG_SEND})
+
+
+def _verdict(spec, exc: BridgeGone) -> tuple:
+    """Two questions a link fault used to answer with one shrug, and they are not the selfsame question.
+
+      self_heal  -- may THE PROXY send it again? Only a read behind no gate, and only where the fault
+                    proves the socket dead. Never a write, whatever the leg says: that a mutation may
+                    have been asked for and only its receipt lost is not a wager this server is
+                    permitted to make on somebody else's hardware, and it stays shut to writes even
+                    where the leg says the wager would have been safe. The rail is absolute on this
+                    side of the line.
+      never_left -- did the command ever reach the rig? The leg answers, and the leg alone. Before the
+                    frame was written there is no outcome to be unknown about, so a caller that sends
+                    it again then is making a first attempt and not a second one.
+
+    Returned as a pair and not folded into a payload here, so that a check may hand this rule the
+    synthesised faults of every leg and of every class and read the whole of the table, owing nothing
+    to a socket, a thread, or the good humour of a TCP stack -- which is the only honest way to test a
+    policy whose whole subject is which of four places the fault happened to have been noticed at.
+    """
+    self_heal = (spec.cls == P.CLASS.READ and spec.gate == P.GATE.NONE
+                 and exc.kind in _REISSUABLE_KINDS)
+    never_left = exc.leg in _NEVER_TRAVELLED_LEGS
+    return self_heal, never_left
 #: One session, one socket, one hand upon it. The bridge admits a single client, so two threads driving
 #: one socket at once is undefined behaviour; this lock is not an optimisation, it is the write mode.
 _link_guard = threading.Lock()
@@ -239,13 +274,21 @@ _link_guard = threading.Lock()
 _last_success = 0.0
 
 
-def _malfunction(code: str, detail: str, retry_safe: bool = False,
-                 proof: dict | None = None) -> dict:
+def _malfunction(code: str, detail: str, retry_safe: bool = False, proof: dict | None = None,
+                 wire_leg: str = "", never_left: bool = False, wire_kind: str = "") -> dict:
     """A failure of *this server* or of the link -- marked so that a caller can tell it apart from a
-    refusal by the rig, which arrives as the bridge's own payload instead."""
+    refusal by the rig, which arrives as the bridge's own payload instead.
+
+    `leg` and `wire_leg` are two different questions and both are worth the key. `leg` answers *who is
+    speaking* -- this server, and not the bridge, which is the distinction the whole of the "Not
+    connected" business turned on. `wire_leg` answers *where on the wire it went wrong*, and with it
+    `never_left`, which is the only thing that tells a caller whether sending the same command again
+    would be a first attempt or a gamble. Flat keys, always present, because a payload whose shape
+    depends on which fault arrived is a payload nobody can code against."""
     out = {"ok": False, "server": SERVER_NAME, "code": f"E_MCP_{code}",
            "error": {"code": f"E_MCP_{code}", "message": detail}, "retry_safe": retry_safe,
-           "leg": "mcp-server",
+           "leg": "mcp-server", "wire_leg": wire_leg, "wire_kind": wire_kind,
+           "never_left": never_left,
            "note": "this came from the MCP server, not from the bridge"}
     if proof:
         #: Which end of the wire is at fault is the question a caller is really asking, and the record
@@ -266,6 +309,16 @@ def _their_side_of_the_wire(runtime_file: str) -> dict:
     keep = {k: rec.get(k) for k in ("running", "host", "port", "pid", "proto_rev")}
     keep["found"] = bool(rec)
     keep["source"] = "the record the bridge published, not a probe of the socket"
+    #: The reason `running` is None here and never will be a number is that running is a measurement
+    #: and the record is a memory: the bridge writes the record when it starts and cannot write its
+    #: own liveness into the past. The heartbeat it does write is the one thing about the live lane
+    #: that the record can honestly carry, because the lane itself stamps it -- and it is the number
+    #: that answers "is the arm being serviced, or is only the socket listening", which no fault
+    #: message has ever been able to answer. Read off the file, so the seat stays where it is.
+    pumped = rec.get("pumped_at")
+    if isinstance(pumped, (int, float)) and pumped > 0:
+        keep["pumped_at"] = pumped
+        keep["pump_age_ms"] = round(max(0.0, time.time() - float(pumped)) * 1000.0, 1)
     for secret in ("token", "auth_token"):
         keep.pop(secret, None)
     return keep
@@ -392,8 +445,10 @@ def dispatch(name: str, arguments: dict, *, runtime_file: str = "",
     #: patience, a human thinking between two of the caller's turns -- then the socket is dead, the
     #: seat is freed, and the fail-safe latch is set on the far side. A read that cannot have written
     #: anything may therefore be sent once more, once a session has been opened again. A write, a
-    #: command behind a gate, or a timeout whose outcome is unknown may not be sent at all, and is
-    #: reported instead. Re-issued exactly once, never more than once.
+    #: command behind a gate, or a timeout whose outcome is unknown may not be sent again BY THIS
+    #: SERVER, and is reported instead -- reported with the leg the fault came in on, which is the
+    #: thing that tells the caller whether sending it themselves is a first attempt or a gamble. The
+    #: proxy re-issues exactly once, never more than once.
     reissued = False
     while True:
         try:
@@ -403,10 +458,15 @@ def dispatch(name: str, arguments: dict, *, runtime_file: str = "",
             break
         except BridgeGone as exc:                       # the link failed; that is not the rig refusing
             _close_bridge()
-            reissuable = (spec.cls == P.CLASS.READ and spec.gate == P.GATE.NONE
-                        and exc.kind in _REISSUABLE_KINDS)
-            if not (reissuable and not reissued):
-                return _malfunction("UNREACHABLE", f"{exc.kind}: {exc.detail}", retry_safe=reissuable,
+            #: The rule lives in _verdict, which is where a check can reach it. A policy that can only
+            #: be proved by winning a bet against a TCP stack is a policy that has not been proved: the
+            #: socket tests below prove that a fault arrives carrying a leg, and the table over there
+            #: proves what is concluded from it. Read the two questions at their source, not here.
+            self_heal, never_left = _verdict(spec, exc)
+            if not (self_heal and not reissued):
+                return _malfunction("UNREACHABLE", f"{exc.kind}: {exc.detail}",
+                                   retry_safe=(self_heal or never_left),
+                                   wire_leg=exc.leg, never_left=never_left, wire_kind=exc.kind,
                                    proof=_their_side_of_the_wire(runtime_file))
             reissued = True
             try:
@@ -414,10 +474,15 @@ def dispatch(name: str, arguments: dict, *, runtime_file: str = "",
                     bridge = connect(runtime_file or CONFIG_PATH)
             except BridgeGone as second:
                 _close_bridge()
+                #: The reconnect died as well, on a leg that is not the answer's. The command went out
+                #: on neither attempt, which is what the second fault's leg says and, in the suite,
+                #: what the count of frames the peer ever saw goes to prove.
                 return _malfunction("UNREACHABLE",
                                     f"a dead link, and the reconnect after it died too "
                                     f"({second.kind}: {second.detail})",
-                                    retry_safe=True, proof=_their_side_of_the_wire(runtime_file))
+                                    retry_safe=True, wire_leg=second.leg or exc.leg,
+                                    wire_kind=second.kind or exc.kind, never_left=True,
+                                    proof=_their_side_of_the_wire(runtime_file))
     if not isinstance(reply, dict):
         return {"ok": False, "cmd": cmd, "error": {"code": P.ERR.PROTO,
                 "message": f"the bridge answered with {type(reply).__name__}, not an object"}}

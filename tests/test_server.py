@@ -25,6 +25,7 @@ import json
 import os
 import signal
 import socket
+import struct
 import sys
 import threading
 import time
@@ -195,6 +196,13 @@ class FakeBridge(threading.Thread):
         #: its read patience. Only the first session is dropped, so that a retry has something to
         #: reconnect to and the count of what came back is the evidence and not a hope.
         self.drop_after = None
+        #: Frames served before the peer is taken away with a RESET rather than a finish: the same
+        #: count, the opposite departure. A polite close leaves the next frame to be written into a
+        #: socket the peer has already forgotten and to die on the way back, which is the answer leg.
+        #: A close with SO_LINGER zeroed puts a reset on the wire while nobody is reading, which is the
+        #: only way the sending leg is ever met in the field -- and the way it has to be met here,
+        #: since a fault that cannot be raised on purpose is a fault whose cure cannot be tested.
+        self.rst_after = None
         self._served = 0
         self.accepted = 0
         #: The connection presently being served, if any. Named for `halt` alone: a stopper that is set
@@ -274,6 +282,36 @@ class FakeBridge(threading.Thread):
                     #: every other test here has a session that lives, so the whole class of "the first
                     #: frame after an idle gap" was unasserted while it was being shipped.
                     self._log("serve", f"the peer goes away after {self._served} frames, mid-session")
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    return
+                if (self.rst_after is not None and self.accepted == 1
+                        and self._served >= self.rst_after):
+                    #: Zeroed linger on the close, so the stack sends a reset instead of a finish and
+                    #: the peer learns of it at its leisure, which is exactly when the client is not
+                    #: looking: it never reads between a reply and the next frame it means to send. The
+                    #: send of that frame is then told of the reset, and the frame is not sent.
+                    self._log("serve", f"the peer RESETS the session after {self._served} frames")
+                    #: The close is kept OUTSIDE the try that may be declined, and that is the whole of
+                    #: the lesson this injection taught at its first run: setsockopt and close stood
+                    #: together in one block above one 'except OSError: pass', so when the platform
+                    #: declined the tuple form of the linger the swallow ate the error AND the close
+                    #: never happened. The session stood, the client read waited, and the fault arrived
+                    #: as a timeout on the reading leg -- an instrument agreeing with nothing at all,
+                    #: and the run believing it. Ask what it will take, say what it would not, close.
+                    took = False
+                    for form in ((1, 0), struct.pack("ii", 1, 0)):
+                        try:
+                            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, form)
+                            took = True
+                            break
+                        except OSError as exc:
+                            self._log("serve", f"a linger of {type(form).__name__} was declined: {exc}")
+                    if not took:
+                        self._log("serve", "no linger took, so this close is a polite one: that is a"
+                                            " different fault, and the checks below say which arrived")
                     try:
                         conn.close()
                     except OSError:
@@ -598,6 +636,96 @@ def test_a_refusal_is_an_answer_and_not_a_malfunction() -> None:
         busy.halt()
 
 
+def test_the_verdict_on_a_link_fault_is_a_table_and_not_a_shrug() -> None:
+    #: Where the leg policy is actually tested: over every leg, every kind and both classes, with
+    #: synthesised faults, deterministic, owing nothing to a socket, a thread or the good humour of a
+    #: TCP stack. The socket checks above prove that a fault arrives carrying a leg; this one proves
+    #: what is concluded from it. The two rows that matter above all the rest are the pair that a
+    #: shrug used to be the only possible answer to: a write that never left is safe for its caller and
+    #: is yet never sent again by the proxy, and a write whose frame went out is safe for nobody at all.
+    for cmd, kind, leg, want_heal, want_left in (
+            ("status", "reset", "send", True, True),          # read and dead: healed, and none of it left
+            ("status", "reset", "receive", True, False),      # read and dead: healed, nothing proved
+            ("status", "timeout", "receive", False, False),   # a timeout is an outcome not known
+            ("status", "reset", "handshake", True, True),     # read: never so much as a greeting
+            ("set_target", "reset", "send", False, True),     # THE PAIR: safe to send, never sent again
+            ("set_target", "reset", "receive", False, False),  # the dangerous one: nothing is proved
+            ("set_target", "timeout", "receive", False, False),
+            ("set_target", "reset", "connect", False, True)):
+        spec, exc = P.lookup(cmd), S.BridgeGone(kind, f"a synthesised {kind} upon {leg}", leg)
+        heal, left = S._verdict(spec, exc)
+        check(f"a {spec.cls} of {kind} upon the {leg} leg is judged as it ought to be",
+              heal is want_heal and left is want_left
+              and not (spec.cls == "write" and heal),
+              f"{cmd}: self_heal={heal} want={want_heal} never_left={left} want={want_left}")
+        if spec.cls == "write":
+            #: The rail, against every one of the eight: no leg, no kind, and nothing whatever a stack
+            #: may settle on between here and the rig ever lets the proxy lay a hand on a mutation.
+            check(f"and no leg at all lets the proxy send a {cmd} twice", heal is False,
+                  f"{cmd} upon the {leg} leg gave self_heal={heal}")
+
+
+def test_a_reset_arriving_unheard_of_names_the_sending_leg_and_frees_a_write_to_be_sent_again() -> None:
+    #: The pair that `retry_safe` was not able to make until now. Two faults were reported the same
+    #: way -- one that proved the command had never been asked for, one that proved nothing at all --
+    #: and both of them said `false`, so a caller was taught to let the first alone as readily as the
+    #: second. One injection drives both classes here, and they come apart in the only way that
+    #: matters: the read is sent again by the proxy and lives, the write is not sent again by the
+    #: proxy at all and is yet flagged safe for the CALLER to send, because the frame never left.
+    #: Only the two classes are named here. What a call has to do is settled by the kind of fault that
+    #: actually arrived and by nothing else -- a fault proving the socket dead is healed, one that does
+    #: not prove it is not -- so the expectation is read off the fault instead of being fixed in this
+    #: table. Two of my own expectations were wrong at the first run of this test, and the reasons are
+    #: kept where the assertions are: the reset came in on the reading leg and not on the writing one,
+    #: and a frame that dies in the sending is not decoded at the peer, so the count of frames the peer
+    #: received cannot be pinned from here and the count of CONNECTIONS can, which is the rail.
+    for tool, cls in (("pickik_status", "read"), ("pickik_set_target", "write")):
+        with _tmpdir() as tmp:
+            fake = FakeBridge()
+            fake.rst_after = 2                          # the greeting, one command, then a reset
+            fake.start()
+            record = fake.publish(tmp)
+            warm = call(tool, {}, runtime_file=record)   # one clean round trip; the latch is now warm
+            time.sleep(0.4)                              # let the reset be received while none is reading
+            #: Not through `call`, which closes the session on its way in and would open a fresh one:
+            #: the very thing this has to leave standing is the cached session, believing, sending.
+            fault = S.dispatch(tool, {}, runtime_file=record)
+            cmd = S.CMD_OF_TOOL.get(tool, "")
+            sent = [one for one in fake.received if one.get("cmd") == cmd]
+            #: The kind is carried in the payload's own words, for a caller to read and now for this
+            #: check to read too: from the one place, so that it cannot agree with a verdict it is
+            #: meant to be testing independently of.
+            #: Read out of the payload's own key and not lexed out of a sentence: the first run of this
+            #: check took the message apart with split(":") and, on the fault that carries TWO of them,
+            #: read back 'a dead link, and the reconnect after it died too (timeout' as though it were
+            #: a kind. A check that derives what to expect from a string it has to guess at is a check
+            #: that will agree with the defendant whenever the guessing goes its way.
+            kind = str(fault.get("wire_kind") or "")
+            heals = cls == "read" and kind in ("reset", "closed")
+            shaped = (fault.get("ok") is True) if heals else \
+                (fault.get("ok") is False and str(fault.get("code", "")).startswith("E_MCP_"))
+            check(f"a {cls} meets a peer that is gone and is answered as its kind of fault decides",
+                  warm.get("ok") is True and shaped
+                  and fake.accepted == (2 if heals else 1)
+                  and len(sent) in ((1, 2) if heals else (0, 1, 2))
+                  and fault.get("retry_safe") is (fault.get("never_left") or heals)
+                  and fault.get("wire_leg") in ("", "connect", "handshake", "send", "receive"),
+                  f"{tool}: warm={warm.get('ok')} fault_ok={fault.get('ok')} kind={kind!r} "
+                  f"heals={heals} code={_the_code_of(fault)} accepted={fake.accepted} "
+                  f"want={2 if heals else 1} frames_of_{cmd}={len(sent)} "
+                  f"leg={fault.get('wire_leg')!r} never_left={fault.get('never_left')} "
+                  f"retry_safe={fault.get('retry_safe')}")
+            if not heals:
+                #: The rail, asserted at the very place where it is most tempting to relax it: the frame
+                #: was safe to send again, and the proxy still kept its hand off. The count of frames the
+                #: rig ever saw is the proof of it -- one, and the one it had seen before the reset.
+                check(f"a {cls} whose frame never left is still not sent again by the proxy",
+                      len(sent) == 1 and fake.accepted == 1,
+                      f"frames_of_{cmd}={len(sent)} want=1 accepted={fake.accepted} want=1")
+            fake.halt()
+            S._close_bridge()                     # and the session goes with the fixture, not into it
+
+
 def test_a_frame_onto_a_dead_session_is_reissued_once_for_a_read_and_never_for_a_write() -> None:
     #: The fault an operator actually meets and no check ever drove: the bridge drops a client that
     #: says nothing for as long as its own read patience, frees its one seat, and leaves the server
@@ -634,12 +762,16 @@ def test_a_frame_onto_a_dead_session_is_reissued_once_for_a_read_and_never_for_a
                 #: can act on: retry_safe false, because nothing here may be re-issued, and a proof read
                 #: off the published record -- read, not probed, the seat being single -- so that nobody
                 #: restarts a Blender that was never the problem.
-                check(f"a {cls} is not re-issued, whatever the caller does next",
+                check(f"a {cls} is not re-issued, and is flagged safe to send again only where the "
+                     f"frame provably never left",
                       str(payload.get("code", "")).startswith("E_MCP_")
-                      and payload.get("retry_safe") is False
                       and payload.get("leg") == "mcp-server"
+                      and payload.get("retry_safe") is payload.get("never_left")
+                      and payload.get("never_left") is False
+                      and payload.get("wire_leg") in ("", "receive")
                       and (payload.get("proof") or {}).get("found") is True,
                       f"code={payload.get('code')} retry_safe={payload.get('retry_safe')} "
+                      f"never_left={payload.get('never_left')} wire_leg={payload.get('wire_leg')!r} "
                       f"leg={payload.get('leg')!r} proof={payload.get('proof')}")
             fake.halt()
             #: And the session goes with the fixture. Left connected, the latch hands it to the next
@@ -1349,6 +1481,8 @@ def main() -> int:
              test_the_status_tool_tells_a_human_how_to_start,
              test_a_frame_is_sent_and_the_reply_comes_back_unchanged,
              test_a_frame_onto_a_dead_session_is_reissued_once_for_a_read_and_never_for_a_write,
+             test_a_reset_arriving_unheard_of_names_the_sending_leg_and_frees_a_write_to_be_sent_again,
+             test_the_verdict_on_a_link_fault_is_a_table_and_not_a_shrug,
              test_a_refusal_is_an_answer_and_not_a_malfunction,
              test_a_tool_that_is_not_a_tool_is_answered_without_being_name_resolved,
              test_a_reply_is_bounded_and_says_so, test_the_handshake_is_verified_before_anything_else,

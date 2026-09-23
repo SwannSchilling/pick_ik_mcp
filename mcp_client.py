@@ -54,9 +54,22 @@ class BridgeGone(RuntimeError):
     returned, not raised. Conflating the two is how a transport hiccup ends up reported to a surgeon
     as a refusal by the rig."""
 
-    def __init__(self, kind: str, detail: str) -> None:
+    #: `leg` is where on the wire the fault happened, and it is not decoration. It is the only thing
+    #: that parts "the frame provably never went out" from "the frame went and the answer did not come
+    #: back" -- the first is safe to send again, the second is OUTCOME_UNKNOWN and must be looked at
+    #: instead. A string and not an enum, because a fault that is not about the wire at all (an
+    #: unreadable record, a host that is not loopback) has no leg and says so with the empty one.
+    def __init__(self, kind: str, detail: str, leg: str = "") -> None:
         super().__init__(f"{kind}: {detail}")
-        self.kind, self.detail = kind, detail
+        self.kind, self.detail, self.leg = kind, detail, leg
+
+
+#: The legs, named once, so that the client raises them and the server reads them by the same words
+#: and neither side has to pattern-match the other's prose to learn where it was standing.
+_LEG_CONNECT = "connect"          # opening, before a greeting was exchanged
+_LEG_HANDSHAKE = "handshake"      # the greeting written; the answer to it refused or malformed
+_LEG_SEND = "send"                # the command frame, out into the socket
+_LEG_RECEIVE = "receive"          # the answer to the frame, back out of the socket
 
 
 def _bye(sock: socket.socket) -> None:
@@ -124,20 +137,44 @@ def _pid_is_running(pid: int) -> bool | None:
         return None                         # a probe that cannot be run is a probe that tells nothing
 
 
-def read_runtime(path: str = RUNTIME_FILE) -> dict | None:
+#: A record that is being republished is, on this platform, momentarily either nothing to open or
+#: refused to open. The writer moves the new name over the old, which keeps a reader from ever seeing
+#: half of a file, and there is no move that keeps a reader from the instant in which it sees none of
+#: one at all: between the removal of the old and the arrival of the new lies a window that no writer
+#: can close. So the reader must forgive it, and looking again is the whole of the forgiveness -- five
+#: looks of two milliseconds apiece, bounded on purpose, for a record that is truly absent stays absent
+#: after the fifth look as it did before the first. Measured and not imagined: two reads in six hundred
+#: of the hammer fell into that window, and both were reported as None, which is to say as a bridge
+#: that is not there at all -- and that report is the graver error of the two, since the operator who
+#: hears it goes and restarts Blender while the bridge was up and running the whole of the while.
+_TRANSIENT_LOOKS = 5
+_TRANSIENT_WAIT_S = 0.002
+
+
+def read_runtime(path: str = RUNTIME_FILE, *, looks: int = _TRANSIENT_LOOKS) -> dict | None:
     """The bridge's live endpoint record, or None when there is none worth reporting.
 
     Stale records are the failure mode this exists to defeat: a `bridge.json` left behind by a dead
     Blender is a file that looks exactly like a running one. So the pid is verified, and a caller
     still has to connect to believe.
+
+    Republished records are read through, and read again. The bridge writes this file by the atomic
+    move, so a reader never sees half of it; what the atomic move cannot prevent is the instant in
+    which there is no such file to open, which is why the transient kinds below are retried and not
+    reported. A file that is present and is not JSON is a different fault, and is still raised loud.
     """
-    try:
-        with open(path, encoding="utf-8") as fh:
-            rec = json.load(fh)
-    except (FileNotFoundError, NotADirectoryError, PermissionError):
-        return None
-    except (ValueError, OSError) as exc:
-        raise BridgeGone("runtime-file", f"{path} is not readable as a runtime record: {exc}") from exc
+    looks = max(1, int(looks))
+    for look in range(looks):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rec = json.load(fh)
+            break
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            if look + 1 >= looks:
+                return None                       # five looks, and none of them a record: there is none
+            time.sleep(_TRANSIENT_WAIT_S)         # the window is of microseconds; this is of mercy
+        except (ValueError, OSError) as exc:
+            raise BridgeGone("runtime-file", f"{path} is not readable as a runtime record: {exc}") from exc
     if not isinstance(rec, dict):
         raise BridgeGone("runtime-file", f"{path} does not hold an object")
     pid = rec.get("pid")
@@ -194,7 +231,8 @@ class Bridge:
     def connect(self) -> dict:
         """Open, handshake, and believe only what the hello says. Raises BridgeGone."""
         if self.connected:
-            raise BridgeGone("state", "already connected; the bridge admits one session")
+            raise BridgeGone("state", "already connected; the bridge admits one session",
+                           _LEG_CONNECT)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.settimeout(CONNECT_TIMEOUT_S)
@@ -202,7 +240,8 @@ class Bridge:
                 sock.connect((self.host, self.port))
             except OSError as exc:
                 _bye(sock)
-                raise BridgeGone("unreachable", f"{self.host}:{self.port} refused ({exc})") from exc
+                raise BridgeGone("unreachable", f"{self.host}:{self.port} refused ({exc})",
+                               _LEG_CONNECT) from exc
             sock.settimeout(self.timeout_ms / 1000.0 + GRACE_MS / 1000.0)
             try:
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -238,7 +277,8 @@ class Bridge:
                 if kind.startswith("e_"):
                     kind = kind[2:]
                 raise BridgeGone(kind or "handshake",
-                               f"the bridge refused the session: {code} {reason}") from None
+                               f"the bridge refused the session: {code} {reason}",
+                               _LEG_HANDSHAKE) from None
         except BaseException:
             self.close()
             raise
@@ -255,17 +295,24 @@ class Bridge:
     def _send(self, obj: dict) -> None:
         sock = self._sock
         if sock is None:
-            raise BridgeGone("state", "not connected")
+            raise BridgeGone("state", "not connected", _LEG_SEND)
         try:
+            #: sendall raises only while bytes are still owed. A frame is one line, and the last byte of
+            #: a line is its terminator, so anything the far end did receive is a line it cannot dispatch
+            #: and has not run. A fault on this leg therefore proves the command never left this process.
             sock.sendall(P.encode(obj))
         except OSError as exc:
-            raise BridgeGone("reset", f"the link died while writing ({exc})") from exc
+            raise BridgeGone("reset", f"the link died while writing ({exc})", _LEG_SEND) from exc
 
     def _recv_frame(self) -> dict:
         """Next complete line, or raise. Never assumes one datagram per request."""
         sock = self._sock
         if sock is None:
-            raise BridgeGone("state", "not connected")
+            raise BridgeGone("state", "not connected", _LEG_RECEIVE)
+        #: From here down it is the answer that is missing and not the request that was refused. The
+        #: frame went away and the reply did not come back, which is the very shape of an outcome that
+        #: is not known: the rig may have moved and only its receipt have been lost. Nobody sends that
+        #: one again; it is looked at, with the state read back out of the rig itself.
         start = time.perf_counter()
         while True:
             line, sep, rest = self._buf.partition(b"\n")
@@ -273,29 +320,32 @@ class Bridge:
                 self._buf = rest
                 return self._decode(line)
             if (time.perf_counter() - start) * 1000.0 > (self.timeout_ms + GRACE_MS):
-                raise BridgeGone("timeout", "no complete frame before the deadline")
+                raise BridgeGone("timeout", "no complete frame before the deadline", _LEG_RECEIVE)
             try:
                 chunk = sock.recv(65_536)
             except TimeoutError as exc:
-                raise BridgeGone("timeout", "the bridge is silent past its deadline") from exc
+                raise BridgeGone("timeout", "the bridge is silent past its deadline",
+                               _LEG_RECEIVE) from exc
             except OSError as exc:
                 if exc.errno in (errno.EINTR,):
                     continue
-                raise BridgeGone("reset", f"the link died while reading ({exc})") from exc
+                raise BridgeGone("reset", f"the link died while reading ({exc})",
+                               _LEG_RECEIVE) from exc
             if not chunk:                                   # orderly EOF: the other side is gone
-                raise BridgeGone("closed", "the bridge closed the connection")
+                raise BridgeGone("closed", "the bridge closed the connection", _LEG_RECEIVE)
             self._buf += chunk
             if len(self._buf) > MAX_FRAME_BYTES:
-                raise BridgeGone("overflow", f"a frame exceeded {MAX_FRAME_BYTES} bytes")
+                raise BridgeGone("overflow", f"a frame exceeded {MAX_FRAME_BYTES} bytes",
+                               _LEG_RECEIVE)
 
     @staticmethod
     def _decode(line: bytes) -> dict:
         try:
             obj = json.loads(line.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
-            raise BridgeGone("protocol", f"a frame was not valid JSON: {exc}") from exc
+            raise BridgeGone("protocol", f"a frame was not valid JSON: {exc}", _LEG_RECEIVE) from exc
         if not isinstance(obj, dict):
-            raise BridgeGone("protocol", "a frame was not a JSON object")
+            raise BridgeGone("protocol", "a frame was not a JSON object", _LEG_RECEIVE)
         return obj
 
     def _request(self, cmd: str, args: dict) -> dict:
@@ -353,6 +403,14 @@ def describe_endpoint(path: str = RUNTIME_FILE) -> dict:
     out = {"running": bool(probe.get("ok")), "runtime_file": path, "found": True,
            "host": rec.get("host"), "port": rec.get("port"), "pid": rec.get("pid"),
            "proto_rev": rec.get("proto_rev"), "started_at": rec.get("started_at")}
+    #: The lane's own heartbeat, read off the record and therefore askable of no socket whatever --
+    #: which is the whole reason it lives in the record and not only in the bridge's memory. A bridge
+    #: whose main thread has stopped draining gives itself away on the age of this number, and gives
+    #: itself away to somebody who cannot afford to take the one seat in order to find it out.
+    pumped = rec.get("pumped_at")
+    if isinstance(pumped, (int, float)) and pumped > 0:
+        out["pumped_at"] = pumped
+        out["pump_age_ms"] = round(max(0.0, time.time() - float(pumped)) * 1000.0, 1)
     if not out["running"]:
         out["why"] = f"a record exists but nothing answered: {probe.get('kind')} {probe.get('detail')}"
         out["how_to_start"] = ("press Start in the PickIK panel; if a stale record is left behind, "
