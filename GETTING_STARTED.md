@@ -225,6 +225,94 @@ the bridge admits one.
 
 ---
 
+## Reading a fault: who is speaking, and where on the wire it went wrong
+
+A reply that is not `ok` is one of two quite different things, and the first key to read tells you
+which. `leg` answers **who is speaking** — `"mcp-server"`, and not the rig — while `wire_leg` answers
+**where on the wire it went wrong**. A fault from this server carries these keys flat and always
+present, whatever the fault was, because a payload whose shape depends on which fault arrived is a
+payload nobody can code against:
+
+| key | what it answers |
+|---|---|
+| `ok` | `false`. The one thing you may not guess at. |
+| `code` | `E_MCP_*` when **this server** spoke. The rig's own codes (`E_BUSY`, `E_TIMEOUT`, …) arrive as *data* instead, in the add-on's own envelope. |
+| `leg` | `"mcp-server"` — whose fault this is. |
+| `wire_leg` | `connect` · `handshake` · `send` · `receive` — where on the wire it fell. `""` when the fault is not of the link at all. |
+| `wire_kind` | `reset` · `closed` · `timeout` · `protocol` · `unreachable` · `state` — which fault of the link ones. |
+| `never_left` | did the command ever reach the rig? |
+| `retry_safe` | may the selfsame call be made again? |
+| `proof` | what the add-on last published about the session — `found`, `host`, `port`, `proto_rev`, `blender`, `pumped_at`, `pump_age_ms`. Read out of the record and **out of no socket**, so it costs nobody the seat (`proof.source` says as much). |
+
+Two questions, and they are not the selfsame question:
+
+* **May the proxy send it again?** Only a read behind no gate, and only where the fault proves the
+  socket dead (`reset`, `closed`). Never a mutating command, whatever the leg says — that rail is
+  absolute, and no setting of yours opens it.
+* **May *you* send it again?** That is `retry_safe`, and for a write it is exactly `never_left`. The
+  leg is the evidence: `sendall` raises only while bytes are still owed, and the last byte of a frame
+  is its newline, so what the rig can have of a command that died on the `send` leg is a line it will
+  never dispatch. Sending it again then is a **first** attempt and not a second one.
+
+The invariant to code against, and the one that catches a caller who has been taught to guess:
+
+```
+for a WRITE:   retry_safe is never_left
+```
+
+| your call | `retry_safe` | do this |
+|---|---|---|
+| a read | `true` | make it again; the server may have healed the link for you already |
+| a read | `false` | the link is up and the rig refused or timed out — reconcile, do not hammer |
+| a write | `true` | the frame provably never left: make the call again. Nothing has moved. |
+| a write | `false` | **the command may have been carried out and only its receipt lost.** Do not re-send. Go and read: `pickik_get_state`, and `pickik_status` for anything that could have moved. |
+
+The last row is the graver one and `timeout` is its commonest cause: `wire_kind` `timeout`,
+`never_left` `false`, and the contract classes `E_TIMEOUT` alone as `OUTCOME_UNKNOWN`.
+
+## Is the lane being serviced? The one question the panel could ask and you could not
+
+Commands are answered on Blender's main thread, which is the selfsame thread that drains the queue —
+and which a background instance never gets at all. So there is one failure that no message has ever
+reported: a command **certainly dispatched and never once executed**, because nobody was draining the
+lane. It is now measurable, and the counts are taken *before* anything can go wrong, so that a drain
+which raised half way through a job is still counted as the drain that it was:
+
+| where | keys | how to read it |
+|---|---|---|
+| `pickik_status` replies, and `pickik_bridge_status` (which embeds the add-on's whole `bridge` dict) | `pump_calls`, `pump_served` | drains taken, and units of work got through. `pump_calls` rising while `pump_served` does not is a lane being swept with nothing in it — healthy, and not the same thing as a pump that has stopped. |
+| the same | `pump_age_ms` | how long ago a drain ran. Small is serviced. |
+| the same | `record_heartbeat_age_ms` | how long ago the record was last republished. Grown while `pump_age_ms` stays small: the **writer** is broken, and not the pump. |
+| the record file itself — `%USERPROFILE%\.pickik\bridge.json` | `pumped_at` | the same age, from a file, for a caller who will not spend the seat on it. |
+
+Read it this way:
+
+* `pump_age_ms` **small** and nothing answering — the lane is being swept and the job is stuck inside
+  somebody's handler. Read `pending`, `pending_mutating`, `last_error`.
+* `pump_age_ms` **grown** while a client is connected — the pump has stopped. Nothing will be
+  dispatched, whatever the queue says. In a windowed Blender that means the timers are not firing (a
+  blocked or hung main thread); in a background one it means no client is pumping, and per §2 the
+  remedy is a windowed Blender or `xvfb-run -a blender`, and not a restart of the bridge.
+* both ages grown together — the record is not being republished, so the age you are reading is stale
+  and is not rising. Believe the panel over the file.
+
+**About the seat, precisely, for the two are not alike.** The `proof` block on a fault, and the record
+file itself, are read from disk and take **no** seat: `_their_side_of_the_wire` is written never to ring
+the number. `pickik_bridge_status`, and `describe_endpoint` in `mcp_client`, *do* open a session to ask
+the far side whether it is there — and the bridge admits exactly one client, so those two contend for
+the one seat, and when this server is already holding it the probe is refused by the bridge and
+`running_how` says so in words instead of pretending the peer was down. To have the age of the drain
+without spending anything, read `pumped_at` out of the record — or the `proof` of a fault you have
+already been handed.
+
+Measured, and not imagined, on a bridge whose pump was held off by hand: `pump_age_ms` went 4.0 →
+**1404.8** while `pumped_at` stayed at `1790157299.151` for the whole of it, and fell back to **7.5**
+when the drain was taken up again. Six hundred reads of the record against a bridge republishing it
+fifty times a second came back with no faults; the raw instrument set beside them saw four refusals in
+six hundred (`PermissionError`, `errno 13`) at the instant the record was being moved over its own
+name, which is why the reader looks again rather than reporting a bridge that is up as a bridge that
+is not there at all.
+
 ## When it will not come up: symptoms, causes, and what was done
 
 | symptom | what it really was | what to do |
