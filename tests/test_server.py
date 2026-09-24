@@ -718,6 +718,31 @@ def test_the_verdict_of_a_stale_server_is_a_table_and_never_self_eating() -> Non
           f"plan with --even-squatting was {sorted(r['pid'] for r in go3)!r}")
 
 
+def test_the_tool_schema_declares_what_the_bridge_reads() -> None:
+    #: The self-describing promise: a generic MCP client reads only `tools/list`, so the schema of
+    #: each tool must carry the parameters the bridge's handler actually reads -- the names, their
+    #: types and which are required -- straight from the catalogue's `params` column. If this drifts
+    #: (a handler reads `angles_deg` while the schema promised `q_deg`), a fresh agent is sent to
+    #: fail exactly as the report showed. The gate keys are declared in addition, never as accepted
+    #: argument shapes of their own; `additionalProperties` stays true because the bridge remains
+    #: the authority on a wrong shape (E_INVAL is a result, not a malfunction).
+    gate_keys = {"confirm", "arm"}
+    by_tool = {t.name: t for t in S.TOOLS}
+    for tool_name, cmd in S.CMD_OF_TOOL.items():
+        tool = by_tool[tool_name]
+        spec = P.lookup(cmd)
+        props = {k: v for k, v in tool.inputSchema.get("properties", {}).items() if k not in gate_keys}
+        want = {p.name: {"type": p.type, "description": p.doc} for p in getattr(spec, "params", ())}
+        check(f"{cmd}: the schema declares exactly the catalogue's parameters",
+              props == want, f"schema {sorted(props)} vs catalogue {sorted(want)}")
+        req = tool.inputSchema.get("required", [])
+        want_req = [p.name for p in getattr(spec, "params", ()) if p.required]
+        check(f"{cmd}: the required list agrees", sorted(req) == sorted(want_req),
+              f"required {sorted(req)} vs catalogue {sorted(want_req)}")
+        check(f"{cmd}: additionalProperties stays true", tool.inputSchema.get("additionalProperties") is True,
+              "the bridge stays the authority on wrong shapes")
+
+
 def test_a_reset_arriving_unheard_of_names_the_sending_leg_and_frees_a_write_to_be_sent_again() -> None:
     #: The pair that `retry_safe` was not able to make until now. Two faults were reported the same
     #: way -- one that proved the command had never been asked for, one that proved nothing at all --
@@ -1545,6 +1570,7 @@ def main() -> int:
              test_a_reset_arriving_unheard_of_names_the_sending_leg_and_frees_a_write_to_be_sent_again,
              test_the_verdict_on_a_link_fault_is_a_table_and_not_a_shrug,
              test_the_verdict_of_a_stale_server_is_a_table_and_never_self_eating,
+             test_the_tool_schema_declares_what_the_bridge_reads,
              test_a_refusal_is_an_answer_and_not_a_malfunction,
              test_a_tool_that_is_not_a_tool_is_answered_without_being_name_resolved,
              test_a_reply_is_bounded_and_says_so, test_the_handshake_is_verified_before_anything_else,

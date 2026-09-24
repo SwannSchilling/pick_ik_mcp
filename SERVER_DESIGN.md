@@ -74,37 +74,37 @@ written. The 14 Phase 1 tools are the rows marked `yes` below.
 
 <!-- CATALOGUE-BEGIN:tools -->
 
-| cmd | class | exec | gate | answered here |
-|---|---|---|---|---|
-| `build_rig` | write | tick | — | yes |
-| `delete_rig` | write | tick | `confirm` | yes |
-| `export_urdf` | write | tick | — | yes |
-| `get_robot_info` | read | tick | — | yes |
-| `get_state` | read | tick | — | yes |
-| `get_target` | read | tick | — | yes |
-| `hw_analyze_frame` | pure | worker | — | — |
-| `hw_check` | hw | worker | — | — |
-| `hw_configure` | write | tick | `confirm` | — |
-| `hw_disconnect` | hw | worker | `confirm` | — |
-| `hw_get_info` | read | tick | — | — |
-| `hw_install` | hw | worker | `confirm` | — |
-| `hw_live_start` | hw | worker | `arm` | — |
-| `hw_live_stop` | hw | worker | — | — |
-| `hw_live_update` | hw | worker | `arm` | — |
-| `hw_motors_move` | hw | worker | `arm` | — |
-| `hw_motors_set_zero` | hw | worker | `arm` | — |
-| `hw_motors_stop` | priority | receiver | — | — |
-| `hw_read_telemetry` | hw | worker | — | — |
-| `hw_send_frame` | hw | worker | `arm` | — |
-| `hw_status` | read | tick | — | — |
-| `set_continuous` | write | tick | — | yes |
-| `set_joint_angles` | write | tick | — | yes |
-| `set_solver` | write | tick | — | yes |
-| `set_solver_config` | write | tick | — | yes |
-| `set_target` | write | tick | — | yes |
-| `solve_ik` | write | tick | — | yes |
-| `status` | read | tick | — | yes |
-| `validate_pose` | pure | worker | — | yes |
+| cmd | class | exec | gate | param (name:type) | answered here |
+|---|---|---|---|---|---|
+| `build_rig` | write | tick | — | rebuild:boolean, q_deg:array | yes |
+| `delete_rig` | write | tick | `confirm` | — | yes |
+| `export_urdf` | write | tick | — | directory:string | yes |
+| `get_robot_info` | read | tick | — | — | yes |
+| `get_state` | read | tick | — | — | yes |
+| `get_target` | read | tick | — | — | yes |
+| `hw_analyze_frame` | pure | worker | — | — | — |
+| `hw_check` | hw | worker | — | — | — |
+| `hw_configure` | write | tick | `confirm` | — | — |
+| `hw_disconnect` | hw | worker | `confirm` | — | — |
+| `hw_get_info` | read | tick | — | — | — |
+| `hw_install` | hw | worker | `confirm` | — | — |
+| `hw_live_start` | hw | worker | `arm` | — | — |
+| `hw_live_stop` | hw | worker | — | — | — |
+| `hw_live_update` | hw | worker | `arm` | — | — |
+| `hw_motors_move` | hw | worker | `arm` | — | — |
+| `hw_motors_set_zero` | hw | worker | `arm` | — | — |
+| `hw_motors_stop` | priority | receiver | — | — | — |
+| `hw_read_telemetry` | hw | worker | — | — | — |
+| `hw_send_frame` | hw | worker | `arm` | — | — |
+| `hw_status` | read | tick | — | — | — |
+| `set_continuous` | write | tick | — | on:boolean | yes |
+| `set_joint_angles` | write | tick | — | angles_deg:array | yes |
+| `set_solver` | write | tick | — | solver:string | yes |
+| `set_solver_config` | write | tick | — | md_weight:number, jt_weight:number, la_weight:number | yes |
+| `set_target` | write | tick | — | target_xyz_mm:array, xyz:array | yes |
+| `solve_ik` | write | tick | — | target_xyz_mm:array, solver:string, seed_q:array, execute:boolean, dry_run:boolean, options:object, quaternion:array | yes |
+| `status` | read | tick | — | — | yes |
+| `validate_pose` | pure | worker | — | q_rad:array, q_deg:array | yes |
 
 _Generated from `mcp_protocol`: proto_rev `5bc953006c6e`, 29 commands, 14 answered in this build. Nothing between the sentinels is hand-written; edit `mcp_docs.py` or the catalogue instead._
 

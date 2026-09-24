@@ -158,19 +158,25 @@ def _build_tools() -> tuple:
         CMD_OF_TOOL[tool_name(cmd)] = cmd
         TOOL_OF_CMD[cmd] = tool_name(cmd)
         schema = {"type": "object", "properties": {}, "additionalProperties": True}
+        for p in getattr(spec, "params", ()):
+            schema["properties"][p.name] = {"type": p.type, "description": p.doc}
+        required = [p.name for p in getattr(spec, "params", ()) if p.required]
+        if required:
+            schema["required"] = required
         if spec.gate != P.GATE.NONE:                       # declared so they can be sent; never added
             schema["properties"]["confirm"] = {"type": "boolean",
                                               "description": "Your own affirmative for a privileged call."}
             if spec.gate == P.GATE.ARM:
                 schema["properties"]["arm"] = {"type": "boolean",
                                               "description": "Your own affirmative for physical motion."}
+        declared = ", ".join(p.name for p in getattr(spec, "params", ())) or "none beyond the gates"
         tools.append(mt.Tool(
             name=tool_name(cmd),
             title=f"{cmd}: {spec.cls} class, {spec.executor} lane",
             description=(f"{spec.note} | class {spec.cls}, runs on the {spec.executor}, deadline "
-                        f"{spec.deadline_ms} ms | {_gate_note(cmd)} | The shape of the arguments is "
-                        f"owned by the bridge: send what the §6 table declares for `{cmd}` and read "
-                        f"E_INVAL if you are told otherwise."),
+                        f"{spec.deadline_ms} ms | {_gate_note(cmd)} | parameters the bridge reads: "
+                        f"{declared}. Send each as declared in the schema; a wrong shape is answered "
+                        f"E_INVAL, which is a result, not a malfunction."),
             inputSchema=schema))
     tools.append(mt.Tool(
         name="pickik_bridge_status", title="Bridge status",
