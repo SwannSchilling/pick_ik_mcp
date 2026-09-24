@@ -52,6 +52,7 @@ for _p in (_PKG, _REPO, os.path.join(_PKG, "vendored")):
 import mcp_protocol as P                              # noqa: E402  the vendored copy, as the server reads it
 import mcp_client as C                                # noqa: E402
 import mcp_server as S                                # noqa: E402
+import mcp_processes as G                              # noqa: E402  the kind of a stale server, above the seat
 
 CHECKS: list = []
 TOKEN = "sekret-tok-3n" + "8" * 24                    # never a real one, never to be echoed
@@ -665,8 +666,68 @@ def test_the_verdict_on_a_link_fault_is_a_table_and_not_a_shrug() -> None:
                   f"{cmd} upon the {leg} leg gave self_heal={heal}")
 
 
+def test_the_verdict_of_a_stale_server_is_a_table_and_never_self_eating() -> None:
+    #: The killing rule, tabled, without one process being enumerated. The whole of the OS is folded
+    #: into a hand-made table of eight rows and the verdict is read out of it; if this ever needs a
+    #: process to be true, it is not testing the rule but the name of a machine. Three things are
+    #: pinned: that ORPHAN with STALE kills, that a live parent or a fresh binary spares, and that the
+    #: flag never disagrees with its own reason -- once a row carried `NOT-OURS` and still printed
+    #: "killable", which is a lying flag, and a lying flag is the instrument fault this work is set
+    #: against. The plan must respect the verdict, and the squatting gate must separate the one seat's
+    #: guard from the rest, being restorable by the switch which asks for it in terms.
+    import datetime as _dt
+    _now = time.time()
+
+    def _cim(seconds: float) -> str:
+        return _dt.datetime.fromtimestamp(seconds).strftime("%Y%m%d%H%M%S") + ".000000+120"
+
+    def _row(pid: int, ppid: int, name: str, cmd: str, born: float) -> dict:
+        return {"ProcessId": str(pid), "ParentProcessId": str(ppid), "Name": name,
+                "CommandLine": cmd or ("C:/Python313/python.exe "
+                                       "F:/GithubProjects/URDF_BIO_IK/pick_ik_mcp/mcp_server.py"),
+                "CreationDate": _cim(born)}
+
+    dead, fresh = _now - 60.0 * 60.0 * 48.0, _now - 60.0
+    top = _now - 2.0 * 3600.0                                    # the youngest source, two hours ago
+    table = {1: _row(1, 0, "Code.exe", "C:/Program Files/Microsoft VS Code/Code.exe", dead),
+             2: _row(2, 1, "python.exe", "", dead),
+             3: _row(3, 1, "python.exe", "", fresh),
+             4: _row(4, 424242, "python.exe", "", dead),
+             5: _row(5, 1, "blender.exe", "D:/blender/blender.exe --startup --python X", dead),
+             7: _row(7, 1, "pythonw.exe", "", dead),
+             8: _row(8, 424242, "python.exe", "", dead),
+             9: _row(9, 9999, "python.exe", "", dead)}
+    mine = {9, 9999}
+    rows = [G.verdict(pid, table[pid], table, top, "mcp_server.py", mine, _now, False)
+            for pid in (1, 2, 3, 4, 5, 7, 8, 9)]
+    killable = {row["pid"] for row in rows if row["killable"]}
+    check("the stale-and-orphaned are the only ones killable", killable == {4, 8},
+          f"killable pids were {sorted(killable)!r}, expected [4, 8]")
+    for row in rows:
+        if not row["killable"]:
+            check(f"row {row['pid']} is spared by a reason that agrees", bool(row["why_not"]),
+                  f"non-killable pid {row['pid']} had no reason")
+    go, spare = G.kill_list(list(rows), squatters=(), even=False)
+    check("the plan follows the verdict", sorted(r["pid"] for r in go) == [4, 8],
+          f"plan was {sorted(r['pid'] for r in go)!r}")
+    go2, _ = G.kill_list(list(rows), squatters={4}, even=False)
+    check("a squatter on the one seat is set apart", sorted(r["pid"] for r in go2) == [8],
+          f"plan with pid 4 squatting was {sorted(r['pid'] for r in go2)!r}")
+    go3, _ = G.kill_list(list(rows), squatters={4}, even=True)
+    check("--even-squatting takes the squatter too", sorted(r["pid"] for r in go3) == [4, 8],
+          f"plan with --even-squatting was {sorted(r['pid'] for r in go3)!r}")
+
+
 def test_a_reset_arriving_unheard_of_names_the_sending_leg_and_frees_a_write_to_be_sent_again() -> None:
     #: The pair that `retry_safe` was not able to make until now. Two faults were reported the same
+    #: way -- one that proved the command had never been asked for, one that proved nothing at all --
+    #: and both of them said `false`, so a caller was taught to let the first alone as readily as the
+    #: second. One injection drives both classes here, and they come apart in the only way that
+    #: matters: the read is sent again by the proxy and lives, the write is not sent again by the
+    #: proxy at all and is yet flagged safe for the CALLER to send, because the frame never left.
+    #: Only the two classes are named here. What a call has to do is settled by the kind of fault that
+    #: actually arrived and by nothing else -- a fault proving the socket dead is healed, one that does
+    #: not prove it is not -- so the expectation is read off the fault instead of being fixed in this
     #: way -- one that proved the command had never been asked for, one that proved nothing at all --
     #: and both of them said `false`, so a caller was taught to let the first alone as readily as the
     #: second. One injection drives both classes here, and they come apart in the only way that
@@ -1483,6 +1544,7 @@ def main() -> int:
              test_a_frame_onto_a_dead_session_is_reissued_once_for_a_read_and_never_for_a_write,
              test_a_reset_arriving_unheard_of_names_the_sending_leg_and_frees_a_write_to_be_sent_again,
              test_the_verdict_on_a_link_fault_is_a_table_and_not_a_shrug,
+             test_the_verdict_of_a_stale_server_is_a_table_and_never_self_eating,
              test_a_refusal_is_an_answer_and_not_a_malfunction,
              test_a_tool_that_is_not_a_tool_is_answered_without_being_name_resolved,
              test_a_reply_is_bounded_and_says_so, test_the_handshake_is_verified_before_anything_else,

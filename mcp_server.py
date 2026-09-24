@@ -571,10 +571,42 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--runtime-file", default="", help="override the bridge's endpoint record")
     parser.add_argument("--config", default=CONFIG_PATH,
                         help=f"the one config file (default {CONFIG_PATH})")
+    # process management (how many are running, and how to take the stale ones away). Plain and beside
+    # --check, as the shape the operator chose: no Blender needed, runnable before Blender is up.
+    parser.add_argument("--ps", action="store_true",
+                        help="list the MCP servers running, with ORPHAN / STALE / SQUATTING verdicts")
+    parser.add_argument("--kill-stale", action="store_true",
+                        help="take away the ORPHAN and STALE servers (a dry run unless --force)")
+    parser.add_argument("--force", action="store_true", help="mean a --kill-stale, stop dry-running")
+    parser.add_argument("--even-squatting", action="store_true",
+                        help="also remove a squatter on the bridge's one seat (with --kill-stale)")
+    parser.add_argument("--every", "--all", action="store_true", dest="every",
+                        help="also match servers of any other checkout")
+    parser.add_argument("--older-than", type=float, default=None, metavar="HOURS",
+                        help="only remove servers older than this age, in hours")
+    parser.add_argument("--json", action="store_true", dest="as_json",
+                        help="print the process report as JSON (for agents)")
     args = parser.parse_args(argv)
     config = load_config(args.config)
     if args.runtime_file:
         config["runtime_file"] = args.runtime_file
+    if args.ps or args.kill_stale:
+        # The record file is the one channel which costs no seat; --ps and --kill-stale read it and
+        # never speak to the bridge. The record is asked of by name so the two halves agree.
+        import mcp_processes as _ps
+        _argv = []
+        if args.every:
+            _argv.append("--every")
+        if args.kill_stale:
+            _argv.append("--kill-stale")
+        if args.force:
+            _argv.append("--force")
+        if args.even_squatting:
+            _argv.append("--even-squatting")
+        if args.older_than is not None:
+            _argv += ["--older-than", str(args.older_than)]
+        return _ps.main(_argv, as_json=args.as_json,
+                        record_file=str(config.get("runtime_file") or ""))
     if args.print_tools or args.check:
         print(f"{SERVER_NAME} {SERVER_VERSION} ({len(TOOLS)} tools, "
               f"{len(CMD_OF_TOOL)} of {len(P.COMMANDS)} catalogue commands answered)")
